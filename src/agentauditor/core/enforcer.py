@@ -45,13 +45,21 @@ class Enforcer:
                     m.risk_level == RiskLevel.CRITICAL for m in verdict.rule_matches
                 )
                 if not has_critical:
+                    # Standard path: all judges agree it's safe with very high confidence
                     all_safe = all(
                         j.risk_level.severity <= 1
                         and j.confidence >= 0.95
                         and j.aligned_with_goal
                         for j in verdict.llm_judgments
                     )
-                    if all_safe:
+                    # Enhanced path: ReAct reasoning identified high false-positive likelihood
+                    fp_override = all(
+                        j.false_positive_likelihood == "high"
+                        and j.confidence >= 0.9
+                        and j.aligned_with_goal
+                        for j in verdict.llm_judgments
+                    )
+                    if all_safe or fp_override:
                         final_decision = Decision.ALLOW
         elif has_modify:
             final_decision = Decision.MODIFY

@@ -68,6 +68,7 @@ class ExecutionLayer(BaseLayer):
                             ),
                             decision=Decision.ESCALATE,
                             matched_pattern=match.group(0),
+                            confidence=0.85,
                         )
                     ]
 

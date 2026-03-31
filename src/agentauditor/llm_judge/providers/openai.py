@@ -32,7 +32,7 @@ class OpenAIProvider(BaseLLMProvider):
     async def complete(self, system: str, user: str) -> str:
         response = await self._client.chat.completions.create(
             model=self.model_name,
-            max_tokens=512,
+            max_tokens=1024,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

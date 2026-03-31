@@ -59,8 +59,14 @@ class AuditEngine:
         )
         self._enforcer = Enforcer(self.policy)
         self._logger = AuditLogger()
-        self._rate_limiter = AnomalyTracker()
-        self._chain_detector = ChainDetector()
+        self._rate_limiter = AnomalyTracker(
+            boundary_probe_threshold=self.policy.boundary_probe_threshold,
+            repetition_threshold=self.policy.repetition_threshold,
+        )
+        self._chain_detector = ChainDetector(
+            window_minutes=self.policy.chain_window_minutes,
+            custom_chain_patterns=self.policy.chain_patterns,
+        )
 
         # Stats
         self._audit_count = 0
@@ -89,7 +95,29 @@ class AuditEngine:
 
         # Record in rate limiter after enforcement
         was_blocked = verdict.decision.value == "block"
-        self._rate_limiter.record(action.agent_id, was_blocked)
+        self._rate_limiter.record_detailed(action.agent_id, action, was_blocked)
+
+        # Check for boundary probing and repetition loops
+        for anomaly_check in (
+            self._rate_limiter.check_boundary_probing,
+            self._rate_limiter.check_repetition,
+        ):
+            anomaly_match = anomaly_check(action.agent_id)
+            if anomaly_match and anomaly_match.risk_level.severity > verdict.risk_level.severity:
+                verdict = Verdict(
+                    action_id=verdict.action_id,
+                    decision=max(
+                        verdict.decision, anomaly_match.decision, key=lambda d: d.priority
+                    ),
+                    risk_level=anomaly_match.risk_level,
+                    rule_matches=verdict.rule_matches + [anomaly_match],
+                    llm_judgments=verdict.llm_judgments,
+                    explanation=f"{verdict.explanation} | {anomaly_match.description}",
+                    layer=verdict.layer,
+                    latency_ms=verdict.latency_ms,
+                    redacted_output=verdict.redacted_output,
+                    stage1_confidence=verdict.stage1_confidence,
+                )
 
         # Check for multi-step attack chains
         chain_match = self._chain_detector.record(action.agent_id, action, verdict)
@@ -106,6 +134,7 @@ class AuditEngine:
                 layer=verdict.layer,
                 latency_ms=verdict.latency_ms,
                 redacted_output=verdict.redacted_output,
+                stage1_confidence=verdict.stage1_confidence,
             )
 
         self._logger.log_verdict(action, verdict)
