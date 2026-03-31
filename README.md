@@ -1,4 +1,4 @@
-# AgentAuditor
+# Auditron
 
 Runtime security agent that intercepts, evaluates, and blocks malicious AI agent actions before they execute on your device.
 
