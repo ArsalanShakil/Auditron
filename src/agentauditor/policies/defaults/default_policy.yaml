@@ -1,0 +1,261 @@
+version: "1.0"
+name: "default"
+description: "Default AgentAuditor policy covering OWASP ASI top risks"
+default_decision: allow
+llm_judge_enabled: false
+llm_judge_threshold: medium
+ensemble_voting: false
+max_latency_ms: 500
+
+rules:
+  # ===== Layer 1: Input (Prompt Injection Detection) =====
+
+  - id: input-001
+    name: prompt_injection_override
+    description: "Detects prompt injection patterns that attempt to override system instructions"
+    layer: input
+    risk_level: critical
+    action_types: [prompt]
+    patterns:
+      - type: regex
+        value: "(?i)(ignore|disregard|forget|override)\\s+(all\\s+)?(previous|above|prior|earlier|system)\\s+(instructions|rules|prompts|constraints)"
+      - type: regex
+        value: "(?i)you\\s+are\\s+now\\s+(a|an|in)\\s+"
+      - type: regex
+        value: "(?i)new\\s+instructions?:\\s+"
+      - type: regex
+        value: "(?i)system\\s*prompt\\s*:"
+      - type: regex
+        value: "(?i)\\bdo\\s+not\\s+follow\\s+(your|the|any)\\s+(rules|guidelines|instructions)"
+    decision: block
+
+  - id: input-002
+    name: prompt_injection_delimiter
+    description: "Detects delimiter-based prompt injection attempts"
+    layer: input
+    risk_level: high
+    action_types: [prompt]
+    patterns:
+      - type: regex
+        value: "(?i)(```)\\s*(system|admin|root|instructions)"
+      - type: regex
+        value: "(?i)</?\\s*(system|admin|instructions|prompt)\\s*>"
+      - type: regex
+        value: "(?i)---\\s*(system|admin|new\\s+context)"
+    decision: block
+
+  - id: input-003
+    name: prompt_injection_role_play
+    description: "Detects role-play based jailbreak attempts"
+    layer: input
+    risk_level: high
+    action_types: [prompt]
+    patterns:
+      - type: regex
+        value: "(?i)(pretend|act|behave|respond)\\s+(like|as\\s+if)\\s+you\\s+(are|were|have)\\s+(no|without)\\s+(restrictions|limitations|rules|filters)"
+      - type: regex
+        value: "(?i)\\bDAN\\b.*\\b(mode|prompt|jailbreak)\\b"
+      - type: regex
+        value: "(?i)developer\\s+mode\\s+(enabled|activated|on)"
+    decision: block
+
+  # ===== Layer 3: Tool Selection =====
+
+  - id: tool-001
+    name: destructive_shell_commands
+    description: "Blocks destructive shell commands that can cause irreversible damage"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [shell_command, tool_call]
+    tool_names: [bash, shell, terminal, execute_command, run_command, Bash]
+    patterns:
+      - type: regex
+        value: "\\brm\\s+-(r|f|rf|fr)\\b"
+      - type: regex
+        value: "\\bmkfs\\."
+      - type: regex
+        value: "\\bdd\\s+if=.*of=/dev/"
+      - type: regex
+        value: "\\bchmod\\s+777\\b"
+      - type: regex
+        value: "\\b>\\.?\\s*/dev/sd"
+      - type: regex
+        value: ":(\\s*)\\(\\)\\s*\\{\\s*:|;\\s*\\}"
+      - type: regex
+        value: "\\bformat\\s+[a-zA-Z]:"
+    decision: block
+
+  - id: tool-002
+    name: network_exfiltration
+    description: "Detects potential data exfiltration via network tools"
+    layer: tool_selection
+    risk_level: high
+    action_types: [shell_command, tool_call, api_call]
+    patterns:
+      - type: regex
+        value: "\\bcurl\\s+.*(-X\\s*POST|--data|--upload-file|-F\\s)"
+      - type: regex
+        value: "\\bwget\\s+.*--post"
+      - type: regex
+        value: "\\bnc\\s+(-e|-c|.*\\d+\\.\\d+\\.\\d+\\.\\d+)"
+      - type: regex
+        value: "\\bscp\\s+.*@"
+      - type: regex
+        value: "\\bsftp\\s+.*@"
+      - type: regex
+        value: "\\brsync\\s+.*:"
+    decision: escalate
+
+  - id: tool-003
+    name: sensitive_file_access
+    description: "Blocks access to sensitive file paths (credentials, keys, configs)"
+    layer: tool_selection
+    risk_level: high
+    action_types: [file_access, tool_call, shell_command]
+    patterns:
+      - type: regex
+        value: "(/etc/passwd|/etc/shadow)"
+      - type: regex
+        value: "\\.ssh/(id_rsa|id_ed25519|authorized_keys|known_hosts|config)"
+      - type: regex
+        value: "\\.env(\\.local|\\.production|\\.staging)?\\b"
+      - type: regex
+        value: "(credentials|secrets?)\\.(ya?ml|json|toml)\\b"
+      - type: regex
+        value: "~/.aws/(credentials|config)"
+      - type: regex
+        value: "~/.kube/config"
+      - type: regex
+        value: "\\.git/config"
+      - type: regex
+        value: "\\b(private[_-]?key|service[_-]?account)\\.json\\b"
+    decision: block
+
+  - id: tool-004
+    name: privilege_escalation
+    description: "Detects privilege escalation attempts"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [shell_command, tool_call]
+    patterns:
+      - type: regex
+        value: "\\bsudo\\s+"
+      - type: regex
+        value: "\\bsu\\s+-"
+      - type: regex
+        value: "\\bchown\\s+root"
+      - type: regex
+        value: "\\bpasswd\\b"
+      - type: regex
+        value: "\\busermod\\s+"
+      - type: regex
+        value: "\\bvisudo\\b"
+    decision: escalate
+
+  - id: tool-005
+    name: command_substitution
+    description: "Detects shell command substitution patterns that may hide malicious payloads"
+    layer: tool_selection
+    risk_level: high
+    action_types: [shell_command, tool_call]
+    patterns:
+      - type: regex
+        value: "\\$\\([^)]+\\)"
+      - type: regex
+        value: "`[^`]+`"
+      - type: regex
+        value: "\\$\\{[^}]*[^A-Za-z_][^}]*\\}"
+    decision: escalate
+
+  # ===== Layer 4: Execution =====
+
+  - id: exec-001
+    name: dangerous_code_execution
+    description: "Detects dangerous dynamic code execution patterns"
+    layer: execution
+    risk_level: critical
+    action_types: [code_execution]
+    patterns:
+      - type: regex
+        value: "\\b(exec|eval|compile)\\s*\\("
+      - type: regex
+        value: "\\b__import__\\s*\\("
+      - type: regex
+        value: "\\bsubprocess\\.(call|run|Popen|check_output)\\s*\\("
+      - type: regex
+        value: "\\bos\\.(system|popen|exec[a-z]*)\\s*\\("
+    decision: escalate
+
+  - id: exec-002
+    name: code_injection_patterns
+    description: "Detects code injection and deserialization attacks"
+    layer: execution
+    risk_level: critical
+    action_types: [code_execution]
+    patterns:
+      - type: regex
+        value: "\\bpickle\\.(loads?|Unpickler)\\s*\\("
+      - type: regex
+        value: "\\byaml\\.load\\s*\\("
+      - type: regex
+        value: "\\bshelve\\.open\\s*\\("
+      - type: regex
+        value: "\\bmarshall?\\.loads?\\s*\\("
+    decision: block
+
+  # ===== Layer 5: Output =====
+
+  - id: output-001
+    name: pii_detection
+    description: "Detects PII patterns in agent output (SSN, credit card, email)"
+    layer: output
+    risk_level: high
+    action_types: [output]
+    patterns:
+      - type: regex
+        value: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+      - type: regex
+        value: "\\b\\d{3}\\s\\d{2}\\s\\d{4}\\b"
+      - type: regex
+        value: "\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b"
+      - type: regex
+        value: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+    decision: modify
+
+  - id: output-002
+    name: secret_leak_detection
+    description: "Detects API keys, tokens, and secrets in agent output"
+    layer: output
+    risk_level: critical
+    action_types: [output]
+    patterns:
+      - type: regex
+        value: "(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|password)\\s*[:=]\\s*['\"]?[A-Za-z0-9_\\-\\.]{8,}"
+      - type: regex
+        value: "(?i)\\b(sk|pk|rk)[-_][a-zA-Z0-9]{20,}\\b"
+      - type: regex
+        value: "(?i)\\bghp_[a-zA-Z0-9]{36}\\b"
+      - type: regex
+        value: "(?i)\\bAIza[0-9A-Za-z_-]{35}\\b"
+      - type: regex
+        value: "(?i)\\bAKIA[0-9A-Z]{16}\\b"
+    decision: modify
+
+  # ===== Layer 8: Identity =====
+
+  - id: identity-001
+    name: unregistered_agent
+    description: "Flags actions from unregistered agents when identity enforcement is active"
+    layer: identity
+    risk_level: medium
+    action_types: []
+    patterns: []
+    decision: escalate
+
+identity_policies:
+  - agent_id: "default"
+    name: "Default Agent"
+    permissions: ["read", "write"]
+    allowed_tools: []
+    denied_tools: []
+    max_risk_level: medium

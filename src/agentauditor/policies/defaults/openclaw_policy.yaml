@@ -1,0 +1,272 @@
+version: "1.0"
+name: "openclaw"
+description: "Security policy for OpenClaw agent gateway — hardened for multi-channel messaging"
+default_decision: allow
+llm_judge_enabled: false
+llm_judge_threshold: medium
+max_latency_ms: 200
+
+rules:
+  # ===== Layer 1: Input (External Message Injection) =====
+  # OpenClaw receives messages from WhatsApp, Telegram, Discord etc.
+  # These are untrusted external input — prime injection vectors.
+
+  - id: oc-input-001
+    name: external_prompt_injection
+    description: "Detects prompt injection in messages from external channels"
+    layer: input
+    risk_level: critical
+    action_types: [prompt]
+    patterns:
+      - type: regex
+        value: "(?i)(ignore|disregard|forget|override)\\s+(all\\s+)?(previous|above|prior|earlier|system)\\s+(instructions|rules|prompts|constraints)"
+      - type: regex
+        value: "(?i)you\\s+are\\s+now\\s+(a|an|in)\\s+"
+      - type: regex
+        value: "(?i)new\\s+instructions?:\\s+"
+      - type: regex
+        value: "(?i)system\\s*prompt\\s*:"
+      - type: regex
+        value: "(?i)\\bdo\\s+not\\s+follow\\s+(your|the|any)\\s+(rules|guidelines|instructions)"
+    decision: block
+
+  - id: oc-input-002
+    name: delimiter_injection
+    description: "Detects delimiter-based prompt injection in messages"
+    layer: input
+    risk_level: high
+    action_types: [prompt]
+    patterns:
+      - type: regex
+        value: "(?i)(```)\\s*(system|admin|root|instructions)"
+      - type: regex
+        value: "(?i)</?\\s*(system|admin|instructions|prompt)\\s*>"
+      - type: regex
+        value: "(?i)---\\s*(system|admin|new\\s+context)"
+    decision: block
+
+  - id: oc-input-003
+    name: jailbreak_attempts
+    description: "Detects jailbreak attempts via roleplay or mode switching"
+    layer: input
+    risk_level: high
+    action_types: [prompt]
+    patterns:
+      - type: regex
+        value: "(?i)(pretend|act|behave|respond)\\s+(like|as\\s+if)\\s+you\\s+(are|were|have)\\s+(no|without)\\s+(restrictions|limitations|rules|filters)"
+      - type: regex
+        value: "(?i)\\bDAN\\b.*\\b(mode|prompt|jailbreak)\\b"
+      - type: regex
+        value: "(?i)developer\\s+mode\\s+(enabled|activated|on)"
+    decision: block
+
+  # ===== Layer 3: Tool Selection (System-Level Protection) =====
+  # OpenClaw executes at OS level — these rules prevent destructive operations
+  # triggered by external messages.
+
+  - id: oc-tool-001
+    name: destructive_commands
+    description: "Blocks destructive OS commands — critical for externally-triggered agents"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [shell_command, tool_call]
+    tool_names: [bash, shell, terminal, execute_command, run_command, Bash]
+    patterns:
+      - type: regex
+        value: "\\brm\\s+-(r|f|rf|fr)\\b"
+      - type: regex
+        value: "\\bmkfs\\."
+      - type: regex
+        value: "\\bdd\\s+if=.*of=/dev/"
+      - type: regex
+        value: "\\bchmod\\s+777\\b"
+      - type: regex
+        value: "\\bformat\\s+[a-zA-Z]:"
+      - type: regex
+        value: "\\bkill\\s+-9\\s+"
+      - type: regex
+        value: "\\bshutdown\\b"
+      - type: regex
+        value: "\\breboot\\b"
+    decision: block
+
+  - id: oc-tool-002
+    name: data_exfiltration
+    description: "Detects data exfiltration via network tools"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [shell_command, tool_call, api_call]
+    patterns:
+      - type: regex
+        value: "\\bcurl\\s+.*(-X\\s*POST|--data|--upload-file|-F\\s)"
+      - type: regex
+        value: "\\bwget\\s+.*--post"
+      - type: regex
+        value: "\\bnc\\s+(-e|-c|.*\\d+\\.\\d+\\.\\d+\\.\\d+)"
+      - type: regex
+        value: "\\bscp\\s+.*@"
+      - type: regex
+        value: "\\brsync\\s+.*:"
+    decision: block
+
+  - id: oc-tool-003
+    name: credential_access
+    description: "Blocks access to credentials, keys, and sensitive configs"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [file_access, tool_call, shell_command]
+    patterns:
+      - type: regex
+        value: "(/etc/passwd|/etc/shadow)"
+      - type: regex
+        value: "\\.ssh/(id_rsa|id_ed25519|authorized_keys|config)"
+      - type: regex
+        value: "\\.env(\\.local|\\.production|\\.staging)?\\b"
+      - type: regex
+        value: "(credentials|secrets?)\\.(ya?ml|json|toml)\\b"
+      - type: regex
+        value: "~/.aws/(credentials|config)"
+      - type: regex
+        value: "~/.openclaw/openclaw\\.json"
+      - type: regex
+        value: "gateway\\.token"
+      - type: regex
+        value: "gateway\\.password"
+    decision: block
+
+  - id: oc-tool-004
+    name: privilege_escalation
+    description: "Blocks privilege escalation attempts"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [shell_command, tool_call]
+    patterns:
+      - type: regex
+        value: "\\bsudo\\s+"
+      - type: regex
+        value: "\\bsu\\s+-"
+      - type: regex
+        value: "\\bchown\\s+root"
+      - type: regex
+        value: "\\bpasswd\\b"
+    decision: block
+
+  - id: oc-tool-005
+    name: openclaw_config_modification
+    description: "Blocks attempts to modify OpenClaw's own configuration"
+    layer: tool_selection
+    risk_level: critical
+    action_types: [shell_command, tool_call, file_access]
+    patterns:
+      - type: regex
+        value: "(?i)openclaw\\s+config\\s+set"
+      - type: regex
+        value: "(?i)openclaw\\.json"
+      - type: regex
+        value: "(?i)\\.openclaw/(plugins|skills|config)"
+    decision: block
+
+  # ===== Layer 4: Execution =====
+
+  - id: oc-exec-001
+    name: dangerous_code
+    description: "Blocks dangerous code execution patterns"
+    layer: execution
+    risk_level: critical
+    action_types: [code_execution]
+    patterns:
+      - type: regex
+        value: "\\b(exec|eval|compile)\\s*\\("
+      - type: regex
+        value: "\\b__import__\\s*\\("
+      - type: regex
+        value: "\\bsubprocess\\.(call|run|Popen|check_output)\\s*\\("
+      - type: regex
+        value: "\\bos\\.(system|popen|exec[a-z]*)\\s*\\("
+      - type: regex
+        value: "\\bpickle\\.(loads?|Unpickler)\\s*\\("
+    decision: block
+
+  # ===== Layer 5: Output (PII/Secret Protection) =====
+  # Critical for messaging channels — agent must not leak PII back to chat.
+
+  - id: oc-output-001
+    name: pii_in_messages
+    description: "Detects PII in agent responses before sending to messaging channels"
+    layer: output
+    risk_level: high
+    action_types: [output]
+    patterns:
+      - type: regex
+        value: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+      - type: regex
+        value: "\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b"
+      - type: regex
+        value: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+    decision: modify
+
+  - id: oc-output-002
+    name: secrets_in_messages
+    description: "Detects secrets/credentials in agent responses"
+    layer: output
+    risk_level: critical
+    action_types: [output]
+    patterns:
+      - type: regex
+        value: "(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|password)\\s*[:=]\\s*['\"]?[A-Za-z0-9_\\-\\.]{8,}"
+      - type: regex
+        value: "(?i)\\b(sk|pk|rk)[-_][a-zA-Z0-9]{20,}\\b"
+      - type: regex
+        value: "(?i)\\bghp_[a-zA-Z0-9]{36}\\b"
+      - type: regex
+        value: "(?i)\\bAKIA[0-9A-Z]{16}\\b"
+    decision: modify
+
+  # ===== Layer 8: Identity (Per-Channel Agent Policies) =====
+
+  - id: oc-identity-001
+    name: unregistered_agent
+    description: "Flags actions from unregistered agents"
+    layer: identity
+    risk_level: medium
+    action_types: []
+    patterns: []
+    decision: escalate
+
+# Per-channel agent identity policies
+# Each messaging channel gets restricted permissions
+identity_policies:
+  - agent_id: "openclaw-telegram"
+    name: "Telegram Channel Agent"
+    permissions: ["read", "message", "search"]
+    allowed_tools: ["search", "calendar", "weather", "reminder", "read_file"]
+    denied_tools: ["bash", "shell", "terminal", "execute_command", "file_write", "file_delete"]
+    max_risk_level: medium
+
+  - agent_id: "openclaw-whatsapp"
+    name: "WhatsApp Channel Agent"
+    permissions: ["read", "message"]
+    allowed_tools: ["search", "weather", "reminder", "calculator"]
+    denied_tools: ["bash", "shell", "terminal", "execute_command", "file_write", "file_delete", "file_read"]
+    max_risk_level: low
+
+  - agent_id: "openclaw-discord"
+    name: "Discord Channel Agent"
+    permissions: ["read", "message", "search"]
+    allowed_tools: ["search", "calendar", "weather", "reminder", "read_file"]
+    denied_tools: ["bash", "shell", "terminal", "execute_command", "file_write", "file_delete"]
+    max_risk_level: medium
+
+  - agent_id: "openclaw-local"
+    name: "Local CLI Agent"
+    permissions: ["read", "write", "execute"]
+    allowed_tools: []
+    denied_tools: []
+    max_risk_level: high
+
+  - agent_id: "default"
+    name: "Default Agent"
+    permissions: ["read"]
+    allowed_tools: []
+    denied_tools: ["bash", "shell"]
+    max_risk_level: medium
