@@ -96,16 +96,30 @@ class Evaluator:
             highest_decision = self.policy.default_decision
             primary_layer = None
 
-        # Step 4: Optional LLM judge
+        # Stage 1 confidence: minimum confidence across all matches
+        stage1_confidence = (
+            min(m.confidence for m in all_matches) if all_matches else 1.0
+        )
+
+        # Step 4: Optional LLM judge (Stage 2) — only when Stage 1 is ambiguous
         llm_judgments = []
-        if (
+        needs_llm = (
             self.llm_judge
             and self.policy.llm_judge_enabled
             and highest_risk >= self.policy.llm_judge_threshold
-        ):
+            and (
+                stage1_confidence < self.policy.llm_judge_confidence_threshold
+                or highest_decision == Decision.ESCALATE
+            )
+        )
+        if needs_llm:
             user_goal = action.context.get("user_goal")
             llm_judgments = await self.llm_judge.evaluate(
-                action, all_matches, user_goal=user_goal
+                action,
+                all_matches,
+                user_goal=user_goal,
+                stage1_confidence=stage1_confidence,
+                stage1_decision=highest_decision.value,
             )
 
         elapsed_ms = (time.monotonic() - start) * 1000
@@ -122,6 +136,7 @@ class Evaluator:
             explanation=explanation,
             layer=primary_layer,
             latency_ms=elapsed_ms,
+            stage1_confidence=stage1_confidence,
         )
 
     @staticmethod

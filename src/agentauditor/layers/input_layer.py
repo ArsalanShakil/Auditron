@@ -67,6 +67,7 @@ class InputLayer(BaseLayer):
                     description=f"Heuristic prompt injection score: {score:.2f}",
                     decision=Decision.ESCALATE,
                     matched_pattern=f"score={score:.2f}",
+                    confidence=score,
                 )
             ]
 

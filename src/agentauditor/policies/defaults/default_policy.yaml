@@ -4,8 +4,12 @@ description: "Default AgentAuditor policy covering OWASP ASI top risks"
 default_decision: allow
 llm_judge_enabled: false
 llm_judge_threshold: medium
+llm_judge_confidence_threshold: 0.8
 ensemble_voting: false
+reflection_enabled: false
+reflection_trigger_decisions: [escalate]
 max_latency_ms: 500
+chain_window_minutes: 10
 
 rules:
   # ===== Layer 1: Input (Prompt Injection Detection) =====
