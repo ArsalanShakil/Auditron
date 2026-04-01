@@ -3,7 +3,7 @@
 import pytest
 
 from agentauditor.core.engine import AuditEngine
-from agentauditor.core.models import Action, ActionType, AgentIdentity, Decision, RiskLevel
+from agentauditor.core.models import Action, ActionType, AgentIdentity, Decision, RiskLevel, Verdict
 
 
 @pytest.mark.asyncio
@@ -90,3 +90,45 @@ class TestIntegration:
             assert verdict.decision == Decision.ALLOW, (
                 f"Expected ALLOW for {action.action_type}: {action.raw_input or action.parameters}"
             )
+
+    async def test_on_block_callback_invoked(self):
+        """on_block_callback must be called when a BLOCK decision is reached."""
+        callback_args: list[tuple] = []
+
+        def capture(action: Action, verdict: Verdict) -> None:
+            callback_args.append((action, verdict))
+
+        from agentauditor.core.engine import AuditEngine
+        eng = AuditEngine(on_block_callback=capture)
+
+        verdict = await eng.intercept_tool_call("bash", {"command": "rm -rf /"})
+        assert verdict.decision == Decision.BLOCK
+        assert len(callback_args) == 1
+        blocked_action, blocked_verdict = callback_args[0]
+        assert blocked_verdict.decision == Decision.BLOCK
+
+    async def test_on_block_callback_not_called_for_allow(self):
+        """on_block_callback must NOT be called for ALLOW decisions."""
+        callback_args: list[tuple] = []
+
+        def capture(action: Action, verdict: Verdict) -> None:
+            callback_args.append((action, verdict))
+
+        from agentauditor.core.engine import AuditEngine
+        eng = AuditEngine(on_block_callback=capture)
+
+        verdict = await eng.intercept_tool_call("read_file", {"path": "/tmp/safe.txt"})
+        assert verdict.decision == Decision.ALLOW
+        assert len(callback_args) == 0
+
+    async def test_on_block_callback_exception_does_not_propagate(self):
+        """A crashing callback must not break the audit pipeline."""
+        def crash(action: Action, verdict: Verdict) -> None:
+            raise RuntimeError("Callback failure")
+
+        from agentauditor.core.engine import AuditEngine
+        eng = AuditEngine(on_block_callback=crash)
+
+        # Should not raise despite crashing callback
+        verdict = await eng.intercept_tool_call("bash", {"command": "rm -rf /"})
+        assert verdict.decision == Decision.BLOCK

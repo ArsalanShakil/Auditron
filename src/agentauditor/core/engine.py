@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agentauditor.core.chain_detector import ChainDetector
 from agentauditor.core.enforcer import Enforcer
@@ -38,7 +38,11 @@ class AuditEngine:
             print("Blocked:", verdict.explanation)
     """
 
-    def __init__(self, policy_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        policy_path: str | Path | None = None,
+        on_block_callback: Callable[[Action, Verdict], None] | None = None,
+    ) -> None:
         self.policy = load_policy(policy_path)
         self._rule_engine = RuleEngine(self.policy)
         self._identity_layer = IdentityLayer()
@@ -71,6 +75,7 @@ class AuditEngine:
         # Stats
         self._audit_count = 0
         self._block_count = 0
+        self._on_block_callback = on_block_callback
 
     async def audit_action(self, action: Action) -> Verdict:
         """Full audit pipeline: rate check -> evaluate -> enforce -> log -> return verdict."""
@@ -141,6 +146,11 @@ class AuditEngine:
         self._audit_count += 1
         if verdict.decision.value == "block":
             self._block_count += 1
+            if self._on_block_callback:
+                try:
+                    self._on_block_callback(action, verdict)
+                except Exception:
+                    pass  # Callback failure must not break the audit pipeline
         return verdict
 
     async def scan_input(self, text: str, agent_id: str | None = None) -> Verdict:

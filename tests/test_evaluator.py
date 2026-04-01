@@ -3,7 +3,10 @@
 import pytest
 
 from agentauditor.core.engine import AuditEngine
-from agentauditor.core.models import Action, ActionType, Decision, RiskLevel
+from agentauditor.core.evaluator import Evaluator
+from agentauditor.core.models import Action, ActionType, Decision, RiskLevel, PolicyConfig
+from agentauditor.layers.base import BaseLayer
+from agentauditor.rules.rule_engine import RuleEngine
 
 
 @pytest.mark.asyncio
@@ -44,3 +47,24 @@ class TestEvaluator:
         verdict = await engine.intercept_tool_call("bash", {"command": "rm -rf /"})
         assert len(verdict.rule_matches) >= 1
         assert verdict.rule_matches[0].rule_id == "tool-001"
+
+    async def test_majority_layer_failure_escalates(self):
+        """If the majority of defense layers raise exceptions, the verdict should ESCALATE."""
+        from agentauditor.core.models import DefenseLayer, RuleMatch
+
+        class CrashLayer(BaseLayer):
+            layer = DefenseLayer.INPUT
+
+            async def analyze(self, action, policy, rule_matches):
+                raise RuntimeError("Simulated layer crash")
+
+        policy = PolicyConfig()
+        rule_engine = RuleEngine(policy)
+        # 4 crashing layers, 0 working — clear majority fails
+        crash_layers = [CrashLayer() for _ in range(4)]
+        evaluator = Evaluator(policy=policy, rule_engine=rule_engine, layers=crash_layers)
+
+        action = Action(action_type=ActionType.TOOL_CALL, tool_name="test")
+        verdict = await evaluator.evaluate(action)
+        assert verdict.decision == Decision.ESCALATE
+        assert any(m.rule_id == "system-layer-failures" for m in verdict.rule_matches)
