@@ -1,4 +1,4 @@
-"""Tests for persistent JSONL audit logging."""
+"""Tests for persistent JSONL audit logging via the backend system."""
 
 import json
 import tempfile
@@ -8,6 +8,8 @@ import pytest
 
 from agentauditor.core.models import Action, ActionType, Decision, RiskLevel, Verdict
 from agentauditor.logging.audit_logger import AuditLogger
+from agentauditor.logging.backends.jsonl import JSONLBackend
+from agentauditor.logging.backends.memory import InMemoryBackend
 
 
 def _make_action_and_verdict() -> tuple[Action, Verdict]:
@@ -55,7 +57,8 @@ class TestAuditLoggerJSONL:
             log_path = Path(f.name)
 
         try:
-            logger = AuditLogger(log_file=log_path)
+            backend = JSONLBackend(file_path=log_path)
+            logger = AuditLogger(backend=backend)
             action, verdict = _make_action_and_verdict()
             logger.log_verdict(action, verdict)
 
@@ -75,7 +78,8 @@ class TestAuditLoggerJSONL:
             log_path = Path(f.name)
 
         try:
-            logger = AuditLogger(log_file=log_path)
+            backend = JSONLBackend(file_path=log_path)
+            logger = AuditLogger(backend=backend)
             action, verdict = _make_action_and_verdict()
             logger.log_verdict(action, verdict)
             logger.log_verdict(action, verdict)
@@ -94,7 +98,8 @@ class TestAuditLoggerJSONL:
             log_path = Path(f.name)
 
         try:
-            logger = AuditLogger(log_file=log_path)
+            backend = JSONLBackend(file_path=log_path)
+            logger = AuditLogger(backend=backend)
             action, verdict = _make_action_and_verdict()
             logger.log_verdict(action, verdict)
 
@@ -108,17 +113,21 @@ class TestAuditLoggerJSONL:
         finally:
             log_path.unlink(missing_ok=True)
 
-    def test_no_file_without_log_file_param(self):
-        logger = AuditLogger()  # No log_file
+    def test_no_file_with_default_memory_backend(self):
+        logger = AuditLogger()  # Default InMemoryBackend
         action, verdict = _make_action_and_verdict()
         logger.log_verdict(action, verdict)
-        # Buffer still works, just no file
         assert logger.total_audits == 1
 
-    def test_silent_failure_on_bad_path(self):
-        logger = AuditLogger(log_file="/nonexistent/dir/audit.jsonl")
+    def test_backend_query_filters_by_decision(self):
+        backend = InMemoryBackend()
+        logger = AuditLogger(backend=backend)
         action, verdict = _make_action_and_verdict()
-        # Should not raise — silent failure
         logger.log_verdict(action, verdict)
-        # Buffer is still populated
-        assert logger.total_audits == 1
+
+        results = backend.query(decision="block")
+        assert len(results) == 1
+        assert results[0]["decision"] == "block"
+
+        results = backend.query(decision="allow")
+        assert len(results) == 0

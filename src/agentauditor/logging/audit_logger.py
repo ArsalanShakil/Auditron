@@ -56,9 +56,6 @@ class AuditLogger:
         self._buffer.append(entry)
         self._backend.store(entry)
 
-        if self._log_file:
-            self._append_to_file(entry)
-
         if self._tracer:
             with self._tracer.start_as_current_span("audit_verdict") as span:
                 span.set_attribute("action.id", action.action_id)

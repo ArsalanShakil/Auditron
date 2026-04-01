@@ -38,7 +38,12 @@ class AuditEngine:
             print("Blocked:", verdict.explanation)
     """
 
-    def __init__(self, policy_path: str | Path | None = None, audit_backend=None) -> None:
+    def __init__(
+        self,
+        policy_path: str | Path | None = None,
+        audit_backend=None,
+        on_block_callback: Callable[[Action, Verdict], None] | None = None,
+    ) -> None:
         self.policy = load_policy(policy_path)
         self._rule_engine = RuleEngine(self.policy)
         self._identity_layer = IdentityLayer()
