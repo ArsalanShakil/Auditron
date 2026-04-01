@@ -1,12 +1,15 @@
 """Text normalization pipeline to defeat evasion techniques.
 
 Handles Unicode homoglyphs, zero-width characters, whitespace variants,
-base64/hex/URL encoding, and shell command substitution detection.
+base64/hex/URL encoding, shell command substitution detection,
+leetspeak, bidi-overrides, combining marks, token splitting,
+ROT13 cipher, and comment injection.
 """
 
 from __future__ import annotations
 
 import base64
+import codecs
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -54,9 +57,44 @@ _CONFUSABLES: dict[str, str] = {
 # Build translation table for confusables
 _CONFUSABLE_TABLE = str.maketrans(_CONFUSABLES)
 
-# Zero-width and format characters to strip
+# Zero-width and format characters to strip (includes bidi overrides)
 _ZERO_WIDTH_CHARS = frozenset(
-    "\u200b\u200c\u200d\ufeff\u2060\u00ad\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+    "\u200b\u200c\u200d\ufeff\u2060\u00ad\u200e\u200f"
+    "\u202a\u202b\u202c\u202d\u202e"  # LRE, RLE, PDF, LRO, RLO
+    "\u2066\u2067\u2068\u2069"  # LRI, RLI, FSI, PDI
+    "\u061c"  # Arabic letter mark
+)
+
+# Bidi override characters specifically (subset — for flagging)
+_BIDI_OVERRIDE_CHARS = frozenset(
+    "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u061c"
+)
+
+# Leetspeak translation table
+_LEET_TABLE = str.maketrans({
+    "0": "o", "1": "i", "3": "e", "4": "a", "5": "s",
+    "7": "t", "@": "a", "$": "s", "!": "i",
+})
+
+# Dangerous keywords for context-sensitive deobfuscation (ROT13, leetspeak)
+_DANGEROUS_KEYWORDS = frozenset({
+    "sudo", "rm", "eval", "exec", "import", "system", "passwd", "shadow",
+    "curl", "wget", "chmod", "chown", "kill", "reboot", "shutdown",
+    "mkfs", "dd", "nc", "ncat", "scp", "rsync", "sftp", "ftp",
+    "pickle", "subprocess", "os.system", "popen", "base64",
+    "ignore", "override", "disregard", "jailbreak", "bypass",
+    "root", "admin", "credentials", "secrets", "env", "ssh",
+})
+
+# ROT13 detection: alpha-only substrings 4+ chars
+_ALPHA_SUBSTRING = re.compile(r"[a-zA-Z]{4,}")
+
+# Token splitting detection: 4+ single alpha chars separated by spaces/punctuation
+_SINGLE_LETTER_RUN = re.compile(r"(?:[a-zA-Z][\s\-_./\\]+){3,}[a-zA-Z]")
+
+# Comment patterns to strip
+_COMMENT_PATTERN = re.compile(
+    r"/\*.*?\*/|<!--.*?-->", re.DOTALL
 )
 
 # Base64 detection: 8+ chars of base64 alphabet, optional padding
@@ -126,8 +164,18 @@ class TextNormalizer:
         if text != before:
             flags.add("unicode_homoglyph")
 
+        # Stage 2b: Leetspeak normalization (context-sensitive)
+        leet_translated = text.lower().translate(_LEET_TABLE)
+        if leet_translated != text.lower():
+            # Only flag + append if leetspeak reveals a dangerous keyword
+            if any(kw in leet_translated and kw not in text.lower() for kw in _DANGEROUS_KEYWORDS):
+                flags.add("leetspeak_normalized")
+
         # Stage 3: Zero-width and format character removal
         before = text
+        # Check for bidi overrides specifically (stronger evasion signal)
+        if any(c in _BIDI_OVERRIDE_CHARS for c in text):
+            flags.add("bidi_override_stripped")
         # Remove known zero-width chars
         text = "".join(c for c in text if c not in _ZERO_WIDTH_CHARS)
         # Remove remaining Unicode format characters (category Cf)
@@ -135,9 +183,23 @@ class TextNormalizer:
         if text != before:
             flags.add("zero_width_stripped")
 
+        # Stage 3b: Combining mark removal (zalgo text, stacked diacritics)
+        before = text
+        text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+        if text != before:
+            flags.add("combining_marks_stripped")
+
         # Stage 4: Whitespace normalization
         text = re.sub(r"[\s\u00a0\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+", " ", text)
         text = text.strip()
+
+        # Stage 4b: Token splitting detection
+        # Detect deliberate single-char splitting: "r m - r f"
+        split_match = _SINGLE_LETTER_RUN.search(text)
+        if split_match:
+            collapsed = re.sub(r"\s+", "", split_match.group(0))
+            if len(collapsed) >= 4:
+                flags.add("token_splitting_detected")
 
         # Stage 5: Encoding expansion (append decoded forms)
         decoded_parts: list[str] = []
@@ -174,12 +236,38 @@ class TextNormalizer:
             except Exception:
                 pass
 
+        # Stage 5b: ROT13 detection
+        for match in _ALPHA_SUBSTRING.finditer(text):
+            chunk = match.group(0)
+            rot13_decoded = codecs.decode(chunk, "rot_13").lower()
+            if any(kw in rot13_decoded for kw in _DANGEROUS_KEYWORDS):
+                if not any(kw in chunk.lower() for kw in _DANGEROUS_KEYWORDS):
+                    decoded_parts.append(rot13_decoded)
+                    flags.add("rot13_decoded")
+
+        # Append leetspeak translation if flagged (after other decoded parts)
+        if "leetspeak_normalized" in flags:
+            decoded_parts.append(leet_translated)
+
+        # Append token-split collapsed form
+        if "token_splitting_detected" in flags and split_match:
+            collapsed = re.sub(r"\s+", "", split_match.group(0))
+            decoded_parts.append(collapsed)
+
         if decoded_parts:
             text = text + " " + " ".join(decoded_parts)
 
         # Stage 6: Shell substitution detection
         if _SHELL_SUB_PATTERN.search(text):
             flags.add("shell_substitution")
+
+        # Stage 6b: Comment injection stripping
+        comment_matches = _COMMENT_PATTERN.findall(text)
+        if comment_matches:
+            stripped = _COMMENT_PATTERN.sub(" ", text)
+            if stripped != text:
+                flags.add("comment_injection")
+                text = re.sub(r"\s+", " ", stripped).strip()
 
         return NormalizedText(original=original, normalized=text, flags=flags)
 
