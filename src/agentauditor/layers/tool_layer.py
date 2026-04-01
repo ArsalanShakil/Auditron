@@ -28,6 +28,7 @@ class ToolLayer(BaseLayer):
             ActionType.SHELL_COMMAND,
             ActionType.FILE_ACCESS,
             ActionType.API_CALL,
+            ActionType.CODE_EXECUTION,
         ):
             return []
 

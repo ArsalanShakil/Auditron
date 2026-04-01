@@ -25,6 +25,14 @@ _INDIRECT_EXEC_PATTERNS = [
     re.compile(r"\bctypes\."),
     re.compile(r"\bshutil\.rmtree\s*\("),
     re.compile(r"\bpickle\.(loads?|Unpickler)\s*\("),
+    # Dynamic attribute access to bypass direct name matching
+    re.compile(r"\bgetattr\s*\(\s*__import__"),
+    re.compile(r"\bgetattr\s*\(\s*\w+\s*,\s*['\"]system['\"]"),
+    # Module-based execution bypasses
+    re.compile(r"\bimportlib\.import_module\s*\("),
+    re.compile(r"\bsys\.modules\s*\["),
+    # Dynamic class creation with callable injection
+    re.compile(r"\btype\s*\(\s*['\"][^'\"]*['\"].*\{"),
 ]
 
 

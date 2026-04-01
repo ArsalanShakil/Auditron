@@ -110,6 +110,18 @@ _URL_ENCODE_PATTERN = re.compile(r"(?:%[0-9a-fA-F]{2}){2,}")
 # Shell substitution patterns
 _SHELL_SUB_PATTERN = re.compile(r"\$\([^)]+\)|`[^`]+`|\$\{[^}]+\}|<\([^)]+\)")
 
+# Octal escape patterns: \041\042 or \41 (1-3 octal digits)
+_OCTAL_ESCAPE_PATTERN = re.compile(r"(?:\\[0-3]?[0-7]{1,2}){2,}")
+
+# Double URL-encoding: %25XX encodes a literal percent, so %2572%256d = %rm
+_DOUBLE_URL_PATTERN = re.compile(r"%25[0-9a-fA-F]{2}")
+
+# Known dangerous keywords used to identify ROT13-encoded payloads
+_ROT13_DANGER_KEYWORDS = frozenset([
+    "rm", "sudo", "eval", "exec", "chmod", "curl", "wget", "bash", "sh",
+    "system", "ignore", "override", "jailbreak", "disregard",
+])
+
 # Tool name alias map
 _TOOL_ALIASES: dict[str, str] = {
     "sh": "bash",
@@ -353,6 +365,35 @@ def _decode_hex_space(text: str) -> str | None:
             decoded = bytes(int(h, 16) for h in hex_bytes).decode("utf-8", errors="ignore")
             if decoded and any(c.isalpha() for c in decoded):
                 return decoded
+    except Exception:
+        pass
+    return None
+
+
+def _decode_octal_escapes(text: str) -> str | None:
+    """Decode \\041 or \\41 style octal escape sequences."""
+    try:
+        octal_bytes = re.findall(r"\\([0-3]?[0-7]{1,2})", text)
+        if octal_bytes:
+            decoded = bytes(int(o, 8) for o in octal_bytes).decode("utf-8", errors="ignore")
+            if decoded and any(c.isalpha() for c in decoded):
+                return decoded
+    except Exception:
+        pass
+    return None
+
+
+def _try_rot13_decode(text: str) -> str | None:
+    """Apply ROT13 and return the decoded string if it contains dangerous keywords.
+
+    Only fires when the ROT13 result contains known attack keywords, to avoid
+    excessive false positives on normal text.
+    """
+    try:
+        decoded = codecs.decode(text, "rot_13")
+        decoded_lower = decoded.lower()
+        if any(kw in decoded_lower for kw in _ROT13_DANGER_KEYWORDS):
+            return decoded
     except Exception:
         pass
     return None

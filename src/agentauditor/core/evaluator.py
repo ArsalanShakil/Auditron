@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
+
+_logger = logging.getLogger(__name__)
 
 from agentauditor.core.models import (
     Action,
@@ -66,10 +69,38 @@ class Evaluator:
                     asyncio.gather(*layer_tasks, return_exceptions=True),
                     timeout=timeout_s,
                 )
-                for result in layer_results:
+                exception_count = 0
+                for i, result in enumerate(layer_results):
                     if isinstance(result, list):
                         all_matches.extend(result)
-                    # Exceptions from individual layers are silently ignored
+                    elif isinstance(result, BaseException):
+                        exception_count += 1
+                        layer_name = (
+                            self.layers[i].layer.value
+                            if i < len(self.layers)
+                            else "unknown"
+                        )
+                        _logger.warning(
+                            "Defense layer '%s' raised an exception: %s",
+                            layer_name,
+                            result,
+                        )
+
+                # If the majority of layers failed, escalate to be safe
+                if exception_count > len(self.layers) / 2:
+                    all_matches.append(
+                        RuleMatch(
+                            rule_id="system-layer-failures",
+                            rule_name="majority_layer_failure",
+                            layer=DefenseLayer.INPUT,
+                            risk_level=RiskLevel.HIGH,
+                            description=(
+                                f"{exception_count} of {len(self.layers)} defense layers "
+                                "failed; escalating as a precaution"
+                            ),
+                            decision=Decision.ESCALATE,
+                        )
+                    )
             except asyncio.TimeoutError:
                 all_matches.append(
                     RuleMatch(
@@ -121,6 +152,9 @@ class Evaluator:
                 stage1_confidence=stage1_confidence,
                 stage1_decision=highest_decision.value,
             )
+            # Belt-and-suspenders: if judge was needed but returned nothing, escalate
+            if not llm_judgments:
+                highest_decision = Decision.ESCALATE
 
         elapsed_ms = (time.monotonic() - start) * 1000
 

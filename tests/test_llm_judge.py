@@ -73,14 +73,48 @@ class TestLLMJudge:
         action = Action(action_type=ActionType.TOOL_CALL, tool_name="test")
         results = await judge.evaluate(action, [])
         assert len(results) == 1
-        assert results[0].risk_level == RiskLevel.MEDIUM  # Fallback
-        assert results[0].confidence == 0.3
+        assert results[0].risk_level == RiskLevel.HIGH  # Parse failure → high risk
+        assert results[0].confidence == 0.1
 
     async def test_no_providers(self):
         judge = LLMJudge([])
         action = Action(action_type=ActionType.TOOL_CALL, tool_name="test")
         results = await judge.evaluate(action, [])
+        # No providers → empty list (no failsafe, since we didn't have providers to fail)
         assert len(results) == 0
+
+    async def test_all_providers_fail_returns_failsafe(self):
+        """When all providers raise exceptions, a fail-safe escalating judgment is returned."""
+        class FailingProvider(BaseLLMProvider):
+            provider_name = "failing"
+            model_name = "fail-v1"
+
+            async def complete(self, system: str, user: str) -> str:
+                raise RuntimeError("Provider unavailable")
+
+        judge = LLMJudge([FailingProvider()])
+        action = Action(action_type=ActionType.TOOL_CALL, tool_name="test")
+        results = await judge.evaluate(action, [])
+        assert len(results) == 1
+        assert results[0].provider == "failsafe"
+        assert results[0].risk_level == RiskLevel.HIGH
+        assert results[0].confidence == 0.0
+        assert not results[0].aligned_with_goal
+
+    async def test_ensemble_all_fail_returns_failsafe(self):
+        """Ensemble mode with all providers failing returns a failsafe."""
+        class FailingProvider(BaseLLMProvider):
+            provider_name = "failing"
+            model_name = "fail-v1"
+
+            async def complete(self, system: str, user: str) -> str:
+                raise RuntimeError("Provider unavailable")
+
+        judge = LLMJudge([FailingProvider(), FailingProvider()], ensemble=True)
+        action = Action(action_type=ActionType.TOOL_CALL, tool_name="test")
+        results = await judge.evaluate(action, [])
+        assert len(results) == 1
+        assert results[0].provider == "failsafe"
 
     async def test_with_user_goal(self):
         provider = MockProvider({

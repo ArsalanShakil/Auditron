@@ -73,12 +73,30 @@ class LLMJudge:
                 for provider in self.providers
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            return [r for r in results if isinstance(r, LLMJudgment)]
+            judgments = [r for r in results if isinstance(r, LLMJudgment)]
         else:
-            result = await self._query_single(
-                self.providers[0], user_prompt, stage1_decision
-            )
-            return [result] if isinstance(result, LLMJudgment) else []
+            try:
+                result = await self._query_single(
+                    self.providers[0], user_prompt, stage1_decision
+                )
+                judgments = [result] if isinstance(result, LLMJudgment) else []
+            except Exception:
+                judgments = []
+
+        # If all providers failed, return a fail-safe escalating judgment
+        if not judgments:
+            judgments = [
+                LLMJudgment(
+                    provider="failsafe",
+                    model="none",
+                    risk_level=RiskLevel.HIGH,
+                    reasoning="All LLM judge providers failed or returned no results; defaulting to escalate",
+                    aligned_with_goal=False,
+                    confidence=0.0,
+                    latency_ms=0.0,
+                )
+            ]
+        return judgments
 
     async def _query_single(
         self,
@@ -200,8 +218,8 @@ class LLMJudge:
             return json.loads(text)
         except json.JSONDecodeError:
             return {
-                "risk_level": "medium",
+                "risk_level": "high",
                 "reasoning": f"Failed to parse LLM response: {raw[:200]}",
                 "aligned_with_goal": False,
-                "confidence": 0.3,
+                "confidence": 0.1,
             }

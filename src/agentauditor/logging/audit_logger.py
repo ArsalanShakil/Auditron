@@ -1,10 +1,14 @@
-"""Structured audit logging using OpenTelemetry spans and in-memory ring buffer."""
+"""Structured audit logging using OpenTelemetry spans and in-memory ring buffer.
+
+Optionally persists verdicts to an append-only JSONL file for durable audit trails.
+"""
 
 from __future__ import annotations
 
 import json
 from collections import deque
 from datetime import timezone
+from pathlib import Path
 
 from agentauditor.core.models import Action, Verdict
 
@@ -47,7 +51,7 @@ class AuditLogger:
             self._tracer = trace.get_tracer(service_name)
 
     def log_verdict(self, action: Action, verdict: Verdict) -> None:
-        """Log an audit event to both the ring buffer and OpenTelemetry."""
+        """Log an audit event to the ring buffer, JSONL file, and OpenTelemetry."""
         entry = self._to_dict(action, verdict)
         self._buffer.append(entry)
         self._backend.store(entry)
@@ -74,6 +78,14 @@ class AuditLogger:
                             "matched_pattern": match.matched_pattern or "",
                         },
                     )
+
+    def _append_to_file(self, entry: dict) -> None:
+        """Append a JSONL line to the audit log file. Failures are silent."""
+        try:
+            with open(self._log_file, "a", encoding="utf-8") as f:  # type: ignore[arg-type]
+                f.write(json.dumps(entry, default=str) + "\n")
+        except OSError:
+            pass  # Logging must never break the audit pipeline
 
     def get_recent_logs(self, limit: int = 50) -> list[dict]:
         """Return recent audit log entries from the hot cache (ring buffer)."""

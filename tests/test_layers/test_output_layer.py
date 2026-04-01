@@ -51,3 +51,58 @@ class TestOutputLayer:
         action = Action(action_type=ActionType.PROMPT, raw_input="hello")
         matches = await layer.analyze(action, policy, [])
         assert len(matches) == 0
+
+    async def test_partial_secret_detection(self):
+        """A bare secret prefix without a full match should trigger ESCALATE."""
+        layer = OutputLayer()
+        policy = load_policy()
+        # "sk_live_" alone doesn't match the full API key pattern
+        action = Action(
+            action_type=ActionType.OUTPUT,
+            raw_output="Here is your key: sk_live_",
+        )
+        matches = await layer.analyze(action, policy, [])
+        assert len(matches) >= 1
+        assert matches[0].rule_id == "output-partial-secret"
+        from agentauditor.core.models import Decision
+        assert matches[0].decision == Decision.ESCALATE
+
+    async def test_full_secret_not_flagged_as_partial(self):
+        """A complete secret that matches the full redaction pattern should not trigger partial."""
+        layer = OutputLayer()
+        policy = load_policy()
+        # Complete GitHub token — should be caught by the full pattern, not partial
+        action = Action(
+            action_type=ActionType.OUTPUT,
+            raw_output="Token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+        )
+        matches = await layer.analyze(action, policy, [])
+        # Full match covers the prefix, so partial detection should not fire
+        assert not any(m.rule_id == "output-partial-secret" for m in matches)
+
+
+class TestNewRedactionPatterns:
+    def test_redacts_iban(self):
+        result = redact_text("IBAN: DE89 3704 0044 0532 0130 00")
+        assert "REDACTED" in result
+
+    def test_redacts_international_phone(self):
+        result = redact_text("Call +1 555 123 4567 for support")
+        assert "REDACTED" in result
+
+    def test_redacts_slack_token(self):
+        # Intentionally fake token for testing redaction pattern coverage
+        result = redact_text("Token: xoxb-XXXXXXXXXX0-XXXXXXXXXX0-XXXXXXXXXXXXXXXX")
+        assert "REDACTED" in result
+
+    def test_redacts_db_connection_string(self):
+        result = redact_text("DB: postgresql://user:pass@localhost/mydb")
+        assert "REDACTED" in result
+
+    def test_redacts_ec_private_key(self):
+        result = redact_text("-----BEGIN EC PRIVATE KEY-----\ndata\n-----END EC PRIVATE KEY-----")
+        assert "REDACTED" in result
+
+    def test_redacts_openssh_private_key(self):
+        result = redact_text("-----BEGIN OPENSSH PRIVATE KEY-----\ndata")
+        assert "REDACTED" in result

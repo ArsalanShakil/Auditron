@@ -87,6 +87,14 @@ rules:
         value: ":(\\s*)\\(\\)\\s*\\{\\s*:|;\\s*\\}"
       - type: regex
         value: "\\bformat\\s+[a-zA-Z]:"
+      - type: regex
+        value: "\\brm\\s+--recursive\\b"
+      - type: regex
+        value: "\\brm\\s+--force\\b"
+      - type: regex
+        value: "\\$\\{?IFS\\}?"
+      - type: regex
+        value: "\\{[^}]*,\\s*/[^}]*\\}"
     decision: block
 
   - id: tool-002
@@ -171,6 +179,25 @@ rules:
         value: "\\$\\{[^}]*[^A-Za-z_][^}]*\\}"
     decision: escalate
 
+  - id: tool-006
+    name: indirect_shell_execution
+    description: "Detects indirect shell execution via interpreter one-liners and find -exec"
+    layer: tool_selection
+    risk_level: high
+    action_types: [shell_command, tool_call]
+    patterns:
+      - type: regex
+        value: "\\bsed\\s+.*-e\\s+['\"].*\\be\\b"
+      - type: regex
+        value: "\\bawk\\s+.*system\\s*\\("
+      - type: regex
+        value: "\\bperl\\s+-e\\s+"
+      - type: regex
+        value: "\\bfind\\s+.*-exec\\b"
+      - type: regex
+        value: "\\bxargs\\s+.*\\b(rm|curl|wget|nc|sh|bash)\\b"
+    decision: escalate
+
   # ===== Layer 4: Execution =====
 
   - id: exec-001
@@ -188,6 +215,12 @@ rules:
         value: "\\bsubprocess\\.(call|run|Popen|check_output)\\s*\\("
       - type: regex
         value: "\\bos\\.(system|popen|exec[a-z]*)\\s*\\("
+      - type: regex
+        value: "\\bgetattr\\s*\\(\\s*__import__"
+      - type: regex
+        value: "\\bimportlib\\.import_module\\s*\\("
+      - type: regex
+        value: "\\bsys\\.modules\\s*\\["
     decision: escalate
 
   - id: exec-002
@@ -205,6 +238,8 @@ rules:
         value: "\\bshelve\\.open\\s*\\("
       - type: regex
         value: "\\bmarshall?\\.loads?\\s*\\("
+      - type: regex
+        value: "\\btype\\s*\\(\\s*['\"][^'\"]*['\"].*\\{"
     decision: block
 
   # ===== Layer 5: Output =====
@@ -224,6 +259,12 @@ rules:
         value: "\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b"
       - type: regex
         value: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+      - type: regex
+        value: "\\b[A-Z]{2}\\d{2}\\s?[0-9A-Z]{4}\\s?[0-9A-Z]{4}\\s?[0-9A-Z]{4}(?:\\s?[0-9A-Z]{4}){0,4}\\b"
+      - type: regex
+        value: "\\+\\d{1,3}[\\s.\\-]?\\(?\\d{1,4}\\)?[\\s.\\-]?\\d{3,4}[\\s.\\-]?\\d{4}\\b"
+      - type: regex
+        value: "\\b[A-Z]{1,2}\\d{6,9}\\b"
     decision: modify
 
   - id: output-002
@@ -243,6 +284,12 @@ rules:
         value: "(?i)\\bAIza[0-9A-Za-z_-]{35}\\b"
       - type: regex
         value: "(?i)\\bAKIA[0-9A-Z]{16}\\b"
+      - type: regex
+        value: "\\bxox[bpras]-[a-zA-Z0-9-]{10,}\\b"
+      - type: regex
+        value: "(?i)(mongodb|postgresql|postgres|mysql|redis|amqp)://[^\\s\"'<>]{10,}"
+      - type: regex
+        value: "-----BEGIN\\s+(?:RSA\\s+|EC\\s+|OPENSSH\\s+|PGP\\s+)?PRIVATE\\s+KEY(?:\\s+BLOCK)?-----"
     decision: modify
 
   # ===== Layer 8: Identity =====

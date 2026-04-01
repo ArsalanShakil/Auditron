@@ -80,3 +80,54 @@ class TestToolLayer:
         action = Action(action_type=ActionType.PROMPT, raw_input="hello")
         matches = await layer.analyze(action, policy, [])
         assert len(matches) == 0
+
+    async def test_code_execution_respects_denied_tools(self):
+        """CODE_EXECUTION actions must respect identity denied_tools."""
+        layer = ToolLayer()
+        policy = PolicyConfig(
+            identity_policies=[
+                AgentIdentity(
+                    agent_id="agent-1",
+                    name="Test",
+                    denied_tools=["python"],
+                )
+            ]
+        )
+        action = Action(
+            action_type=ActionType.CODE_EXECUTION,
+            tool_name="python",
+            agent_id="agent-1",
+        )
+        matches = await layer.analyze(action, policy, [])
+        assert len(matches) >= 1
+        assert matches[0].decision == Decision.BLOCK
+
+    async def test_code_execution_respects_allowed_tools(self):
+        """CODE_EXECUTION actions must respect identity allowed_tools."""
+        layer = ToolLayer()
+        policy = PolicyConfig(
+            identity_policies=[
+                AgentIdentity(
+                    agent_id="agent-1",
+                    name="Test",
+                    allowed_tools=["python"],
+                )
+            ]
+        )
+        # python is allowed
+        action_allowed = Action(
+            action_type=ActionType.CODE_EXECUTION,
+            tool_name="python",
+            agent_id="agent-1",
+        )
+        assert len(await layer.analyze(action_allowed, policy, [])) == 0
+
+        # node is not in allowed_tools
+        action_denied = Action(
+            action_type=ActionType.CODE_EXECUTION,
+            tool_name="node",
+            agent_id="agent-1",
+        )
+        matches = await layer.analyze(action_denied, policy, [])
+        assert len(matches) >= 1
+        assert matches[0].decision == Decision.ESCALATE

@@ -80,3 +80,58 @@ class TestAgentRegistry:
         registry.register("agent-1", {"read", "write"})
         assert registry.get_permissions("agent-1") == {"read", "write"}
         assert registry.get_permissions("unknown") is None
+
+    # --- New security tests ---
+
+    def test_token_format_includes_timestamp(self):
+        registry = AgentRegistry()
+        token = registry.register("agent-1", {"read"}, secret="my-secret")
+        assert token is not None
+        parts = token.split(":")
+        assert len(parts) == 3, "Token should be nonce:timestamp:sig"
+        # Timestamp should be parseable as float
+        assert float(parts[1]) > 0
+
+    def test_token_expiry_rejects_expired_token(self):
+        import time as _time
+        # Set a very short TTL
+        registry = AgentRegistry(token_ttl_seconds=0.001)
+        token = registry.register("agent-1", {"read"}, secret="my-secret")
+        _time.sleep(0.05)  # Wait for token to expire
+        assert not registry.verify("agent-1", token), "Expired token should be rejected"
+
+    def test_token_valid_within_ttl(self):
+        registry = AgentRegistry(token_ttl_seconds=3600)
+        token = registry.register("agent-1", {"read"}, secret="my-secret")
+        assert registry.verify("agent-1", token), "Valid token should be accepted"
+
+    def test_nonce_replay_blocked(self):
+        registry = AgentRegistry()
+        token = registry.register("agent-1", {"read"}, secret="my-secret")
+        assert registry.verify("agent-1", token), "First use should succeed"
+        assert not registry.verify("agent-1", token), "Replay should be blocked"
+
+    def test_invalid_agent_id_rejected(self):
+        registry = AgentRegistry()
+        with pytest.raises(ValueError, match="Invalid agent_id"):
+            registry.register("\x00evil", {"read"})
+        with pytest.raises(ValueError, match="Invalid agent_id"):
+            registry.register("has space", {"read"})
+        with pytest.raises(ValueError, match="Invalid agent_id"):
+            registry.register("", {"read"})
+
+    def test_valid_agent_id_formats_accepted(self):
+        registry = AgentRegistry()
+        # All of these should succeed without raising
+        registry.register("simple")
+        registry.register("with-hyphens")
+        registry.register("with_underscores")
+        registry.register("with.dots")
+        registry.register("Mixed123")
+        assert registry.count == 5
+
+    def test_invalid_agent_id_in_verify_returns_false(self):
+        registry = AgentRegistry()
+        # Invalid agent_id in verify() should return False, not raise
+        assert not registry.verify("\x00bad")
+        assert not registry.verify("")
