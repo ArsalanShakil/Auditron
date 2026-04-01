@@ -2,12 +2,12 @@
 
 Runtime security agent that intercepts, evaluates, and blocks malicious AI agent actions before they execute on your device.
 
-Covers the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/): prompt injection, tool misuse, privilege abuse, unsafe code execution, data exfiltration, PII leaks, and more.
+Covers prompt injection, tool misuse, privilege abuse, unsafe code execution, data exfiltration, PII leaks, and more.
 
 ## Features
 
 - **5-layer defense**: Input (prompt injection), Tool Selection, Execution, Output (PII/secrets), Identity (permissions)
-- **12 built-in detection rules** covering OWASP ASI top risks
+- **12 built-in detection rules** covering top agentic security risks
 - **MCP server** for Claude Code, Cursor, Windsurf, and other MCP-compatible agents
 - **CLI tool** for standalone scanning
 - **Python library** for direct integration
@@ -147,35 +147,59 @@ agentauditor scan --policy ./my_policy.yaml "DROP TABLE users"
 
 ## Architecture
 
+Open [`architecture.html`](architecture.html) in a browser for the full interactive architecture diagram. Here's an overview:
+
 ```
-Agent action -> AuditEngine
-  -> Evaluator (parallel layers)
-     -> InputLayer (prompt injection)
-     -> ToolLayer (tool/param validation)
-     -> ExecutionLayer (code safety)
-     -> OutputLayer (PII/secrets)
-     -> IdentityLayer (permissions)
-  -> RuleEngine (deterministic, <1ms)
-  -> LLMJudge (optional, for nuanced cases)
-  -> Enforcer (block > escalate > modify > allow)
-  -> AuditLogger (OpenTelemetry)
-  -> Verdict
+External Agents (AI agents, OpenClaw, CLI, SDK)
+  │
+  ▼ Action (tool_call / prompt / output)
+  │
+  ├─ Step 0: Rate Limit & Lockout Gate (short-circuit)
+  │
+  ├─ Step 1: Two-Stage Evaluator
+  │   ├─ Stage 1 — Deterministic (<1ms)
+  │   │   ├─ Rule Engine (YAML pattern matching)
+  │   │   ├─ Text Normalizer (evasion defeat)
+  │   │   └─ 5 Defense Layers (parallel async):
+  │   │       ├─ Input: Prompt injection scoring
+  │   │       ├─ Tool Selection: Allow/deny + param validation
+  │   │       ├─ Execution: Indirect code exec detection
+  │   │       ├─ Output: PII & secret redaction
+  │   │       └─ Identity: Agent registry + HMAC tokens
+  │   │
+  │   └─ Stage 2 — LLM Judge (only if confidence < 0.8 or ESCALATE)
+  │       ├─ ReAct reasoning: Thought → Observation → Reasoning → Judgment
+  │       ├─ False-positive analysis + mitigating/aggravating factors
+  │       ├─ Ensemble voting (multi-provider)
+  │       └─ Optional self-critique reflection
+  │
+  ├─ Step 2: Enforcer
+  │   └─ Decision precedence: BLOCK > ESCALATE > MODIFY > ALLOW
+  │
+  ├─ Step 3: Post-Enforcement Analysis
+  │   ├─ Boundary probing detection (variation tracking)
+  │   ├─ Repetition loop detection (fingerprint matching)
+  │   └─ Chain detection (intent: recon → escalate → exfil)
+  │
+  ├─ Step 4: Audit Logger (ring buffer + OpenTelemetry)
+  │
+  ▼ Verdict returned to calling agent
 ```
 
 ## Detection Coverage
 
-| Threat | OWASP ASI | Layer | Action |
-|--------|-----------|-------|--------|
-| Prompt injection (override, delimiter, roleplay) | ASI01 | Input | Block |
-| Destructive shell commands (rm -rf, mkfs, dd) | ASI02 | Tool Selection | Block |
-| Data exfiltration (curl POST, nc, scp) | ASI02 | Tool Selection | Escalate |
-| Sensitive file access (.ssh, .env, credentials) | ASI03 | Tool Selection | Block |
-| Privilege escalation (sudo, su, chown root) | ASI03 | Tool Selection | Escalate |
-| Dangerous code execution (eval, exec, subprocess) | ASI07 | Execution | Escalate |
-| Code injection (pickle, yaml.load, marshal) | ASI07 | Execution | Block |
-| PII leaks (SSN, credit card, email) | ASI01 | Output | Modify (redact) |
-| Secret exposure (API keys, AWS keys, GitHub tokens) | ASI01 | Output | Modify (redact) |
-| Unregistered agents | ASI03 | Identity | Escalate |
+| Threat | Layer | Action |
+|--------|-------|--------|
+| Prompt injection (override, delimiter, roleplay) | Input | Block |
+| Destructive shell commands (rm -rf, mkfs, dd) | Tool Selection | Block |
+| Data exfiltration (curl POST, nc, scp) | Tool Selection | Escalate |
+| Sensitive file access (.ssh, .env, credentials) | Tool Selection | Block |
+| Privilege escalation (sudo, su, chown root) | Tool Selection | Escalate |
+| Dangerous code execution (eval, exec, subprocess) | Execution | Escalate |
+| Code injection (pickle, yaml.load, marshal) | Execution | Block |
+| PII leaks (SSN, credit card, email) | Output | Modify (redact) |
+| Secret exposure (API keys, AWS keys, GitHub tokens) | Output | Modify (redact) |
+| Unregistered agents | Identity | Escalate |
 
 ## Development
 
