@@ -154,6 +154,56 @@ def validate_policy_cmd(
 
 
 @app.command()
+def verify(
+    policy: Optional[Path] = typer.Option(
+        None, "--policy", "-p", help="Path to policy YAML"
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show all test details"),
+) -> None:
+    """Run adversarial self-test against current policy."""
+    from agentauditor.testing.adversarial import AdversarialVerifier
+
+    engine = AuditEngine(policy_path=policy)
+    verifier = AdversarialVerifier(engine)
+
+    console.print("[bold]Running adversarial verification suite...[/bold]")
+    report = asyncio.run(verifier.run_full_suite())
+
+    if json_output:
+        import dataclasses
+        console.print_json(json.dumps(dataclasses.asdict(report), default=str))
+        return
+
+    # Summary
+    pass_color = "green" if report.pass_rate >= 0.8 else "yellow" if report.pass_rate >= 0.5 else "red"
+    console.print(f"\n[bold]Results:[/bold] [{pass_color}]{report.passed}/{report.total_tests} passed ({report.pass_rate:.0%})[/{pass_color}]")
+
+    # Failed tests
+    failed = [r for r in report.results if not r.passed]
+    if failed:
+        console.print(f"\n[red]Failed tests ({len(failed)}):[/red]")
+        for r in failed:
+            console.print(f"  [red]FAIL[/red] {r.test_name}: {r.details}")
+
+    # Evasion gaps
+    if report.evasion_gaps:
+        console.print(f"\n[yellow]Evasion gaps ({len(report.evasion_gaps)}):[/yellow]")
+        for gap in report.evasion_gaps:
+            console.print(f"  - {gap}")
+
+    # Verbose: all results
+    if verbose:
+        console.print("\n[bold]All tests:[/bold]")
+        for r in report.results:
+            status = "[green]PASS[/green]" if r.passed else "[red]FAIL[/red]"
+            console.print(f"  {status} {r.test_name}: {r.details}")
+
+    if report.failed > 0:
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def status(
     policy: Optional[Path] = typer.Option(
         None, "--policy", "-p", help="Path to policy YAML"

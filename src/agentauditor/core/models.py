@@ -119,6 +119,7 @@ class RuleMatch(BaseModel):
     description: str
     decision: Decision = Decision.BLOCK
     matched_pattern: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class LLMJudgment(BaseModel):
@@ -131,6 +132,13 @@ class LLMJudgment(BaseModel):
     aligned_with_goal: bool
     confidence: float = Field(ge=0.0, le=1.0)
     latency_ms: float
+    thought: str = ""
+    observation: str = ""
+    false_positive_likelihood: str = "medium"
+    mitigating_factors: list[str] = Field(default_factory=list)
+    aggravating_factors: list[str] = Field(default_factory=list)
+    self_critique: str = ""
+    assessment_revised: bool = False
 
 
 class Verdict(BaseModel):
@@ -145,6 +153,7 @@ class Verdict(BaseModel):
     layer: DefenseLayer | None = None
     latency_ms: float
     redacted_output: str | None = None
+    stage1_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -186,5 +195,14 @@ class PolicyConfig(BaseModel):
     llm_judge_threshold: RiskLevel = RiskLevel.MEDIUM
     ensemble_voting: bool = False
     max_latency_ms: float = 500.0
+    llm_judge_confidence_threshold: float = 0.8
+    reflection_enabled: bool = False
+    reflection_trigger_decisions: list[str] = Field(
+        default_factory=lambda: ["escalate"]
+    )
+    chain_window_minutes: int = 10
+    chain_patterns: list[dict[str, Any]] = Field(default_factory=list)
+    boundary_probe_threshold: int = 3
+    repetition_threshold: int = 5
     rules: list[PolicyRule] = Field(default_factory=list)
     identity_policies: list[AgentIdentity] = Field(default_factory=list)

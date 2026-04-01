@@ -1,15 +1,24 @@
-"""Multi-step attack chain detection.
+"""Multi-step attack chain detection with intent classification.
 
 Detects sequences of individually-safe-looking actions that combine into attacks:
-recon → privilege escalation → data exfiltration.
+recon -> privilege escalation -> data exfiltration.
+
+Enhanced with:
+- Intent classification for richer chain matching
+- Parameter similarity tracking
+- Configurable time windows
+- Custom YAML-defined chain patterns
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from agentauditor.core.models import (
     Action,
@@ -31,6 +40,9 @@ class ActionRecord:
     risk_level: RiskLevel
     decision: str
     timestamp: float
+    parameters_hash: str = ""
+    raw_input_snippet: str = ""
+    intent_category: str = ""
 
 
 # Built-in chain patterns
@@ -40,14 +52,37 @@ _EXFIL_TOOLS = re.compile(r"(?i)\b(curl|wget|scp|nc|rsync|sftp|ftp)\b")
 _CREDENTIAL_FILES = re.compile(
     r"(?i)(\.ssh|\.env|\.aws|credentials|secrets|id_rsa|\.git/config|\.kube)"
 )
+_NETWORK_TOOLS = re.compile(r"(?i)\b(curl|wget|nc|ncat|netcat|ssh|telnet|nmap)\b")
+_WRITE_TOOLS = re.compile(r"(?i)\b(echo|tee|write|cat\s*>|mv|cp|install)\b")
+_READ_TOOLS = re.compile(r"(?i)\b(cat|head|tail|less|more|read|open|view)\b")
+
+# Intent category definitions — ordered most-specific first
+_INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("credential_access", _CREDENTIAL_FILES),
+    ("escalate", _ESCALATION_TOOLS),
+    ("exfil", _EXFIL_TOOLS),
+    ("recon", _RECON_TOOLS),
+    ("network", _NETWORK_TOOLS),
+    ("write", _WRITE_TOOLS),
+    ("read", _READ_TOOLS),
+]
 
 
 class ChainDetector:
-    """Detects multi-step attack chains from per-agent action history."""
+    """Detects multi-step attack chains from per-agent action history.
 
-    def __init__(self, window_minutes: int = 10, max_history: int = 50) -> None:
+    Supports both built-in chain patterns and custom YAML-defined patterns.
+    """
+
+    def __init__(
+        self,
+        window_minutes: int = 10,
+        max_history: int = 50,
+        custom_chain_patterns: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.window_minutes = window_minutes
         self.max_history = max_history
+        self.custom_chain_patterns = custom_chain_patterns or []
         self._history: dict[str, deque[ActionRecord]] = defaultdict(
             lambda: deque(maxlen=max_history)
         )
@@ -63,24 +98,61 @@ class ChainDetector:
             return None
 
         now = time.monotonic()
-        record = ActionRecord(
-            action_type=action.action_type,
-            tool_name=action.tool_name,
-            risk_level=verdict.risk_level,
-            decision=verdict.decision.value,
-            timestamp=now,
-        )
-        self._history[agent_id].append(record)
 
         # Build searchable text from action
         searchable = " ".join(
             filter(None, [action.tool_name, action.raw_input, str(action.parameters)])
         )
 
-        # Check built-in chain patterns
-        return self._check_chains(agent_id, searchable, now)
+        record = ActionRecord(
+            action_type=action.action_type,
+            tool_name=action.tool_name,
+            risk_level=verdict.risk_level,
+            decision=verdict.decision.value,
+            timestamp=now,
+            parameters_hash=self._parameters_hash(action),
+            raw_input_snippet=(action.raw_input or "")[:200],
+            intent_category=self._classify_intent(action, searchable),
+        )
+        self._history[agent_id].append(record)
 
-    def _check_chains(
+        # Check built-in chain patterns first
+        result = self._check_builtin_chains(agent_id, searchable, now)
+        if result:
+            return result
+
+        # Check custom YAML-defined chain patterns
+        return self._check_custom_chains(agent_id, now)
+
+    def _classify_intent(self, action: Action, searchable: str) -> str:
+        """Classify an action's intent into a category for chain matching."""
+        for category, pattern in _INTENT_PATTERNS:
+            if pattern.search(searchable):
+                return category
+
+        # Fallback: classify by action type
+        type_map = {
+            ActionType.SHELL_COMMAND: "modify",
+            ActionType.CODE_EXECUTION: "modify",
+            ActionType.FILE_ACCESS: "read",
+            ActionType.API_CALL: "network",
+            ActionType.PROMPT: "read",
+            ActionType.OUTPUT: "read",
+        }
+        return type_map.get(action.action_type, "unknown")
+
+    @staticmethod
+    def _parameters_hash(action: Action) -> str:
+        """Hash action parameters for similarity tracking."""
+        parts = [action.tool_name or ""]
+        if action.parameters:
+            parts.append(json.dumps(action.parameters, sort_keys=True, default=str))
+        if action.raw_input:
+            parts.append(action.raw_input[:500])
+        normalized = "|".join(parts)
+        return hashlib.md5(normalized.encode()).hexdigest()[:12]
+
+    def _check_builtin_chains(
         self, agent_id: str, current_text: str, now: float
     ) -> RuleMatch | None:
         history = self._history[agent_id]
@@ -90,14 +162,13 @@ class ChainDetector:
         if len(recent) < 2:
             return None
 
-        # Chain 1: Recon → Escalation → Exfiltration
+        # Chain 1: Recon -> Escalation -> Exfiltration
         has_recon = any(
-            _RECON_TOOLS.search(r.tool_name or "")
+            r.intent_category == "recon" or _RECON_TOOLS.search(r.tool_name or "")
             for r in recent[:-1]
         )
         has_escalation = any(
-            _ESCALATION_TOOLS.search(r.tool_name or "")
-            or _ESCALATION_TOOLS.search(str(getattr(r, "raw_input", "")))
+            r.intent_category == "escalate" or _ESCALATION_TOOLS.search(r.tool_name or "")
             for r in recent[:-1]
         )
         is_exfil = bool(_EXFIL_TOOLS.search(current_text))
@@ -110,15 +181,16 @@ class ChainDetector:
                 risk_level=RiskLevel.CRITICAL,
                 description=(
                     "Multi-step attack chain detected: "
-                    "reconnaissance → privilege escalation → data exfiltration"
+                    "reconnaissance -> privilege escalation -> data exfiltration"
                 ),
                 decision=Decision.BLOCK,
-                matched_pattern="recon→escalate→exfiltrate",
+                matched_pattern="recon->escalate->exfiltrate",
             )
 
-        # Chain 2: Credential file access → Exfiltration
+        # Chain 2: Credential file access -> Exfiltration
         has_cred_access = any(
-            _CREDENTIAL_FILES.search(r.tool_name or "")
+            r.intent_category == "credential_access"
+            or _CREDENTIAL_FILES.search(r.tool_name or "")
             for r in recent[:-1]
         )
         if has_cred_access and is_exfil:
@@ -129,10 +201,10 @@ class ChainDetector:
                 risk_level=RiskLevel.CRITICAL,
                 description=(
                     "Attack chain detected: "
-                    "credential file access → data exfiltration"
+                    "credential file access -> data exfiltration"
                 ),
                 decision=Decision.BLOCK,
-                matched_pattern="credential→exfiltrate",
+                matched_pattern="credential->exfiltrate",
             )
 
         # Chain 3: Repeated escalations (3+ in window)
@@ -152,3 +224,55 @@ class ChainDetector:
             )
 
         return None
+
+    def _check_custom_chains(
+        self, agent_id: str, now: float
+    ) -> RuleMatch | None:
+        """Check user-defined chain patterns from policy YAML.
+
+        Expected pattern format:
+            name: "recon_to_exfil"
+            sequence: ["recon", "credential_access", "exfil"]
+            window_minutes: 15
+            decision: "block"
+            risk_level: "critical"
+        """
+        for pattern in self.custom_chain_patterns:
+            sequence = pattern.get("sequence", [])
+            if len(sequence) < 2:
+                continue
+
+            window = pattern.get("window_minutes", self.window_minutes)
+            cutoff = now - (window * 60)
+            recent = [r for r in self._history[agent_id] if r.timestamp > cutoff]
+
+            if self._matches_sequence(recent, sequence):
+                decision_str = pattern.get("decision", "block")
+                risk_str = pattern.get("risk_level", "critical")
+                return RuleMatch(
+                    rule_id=f"chain-custom-{pattern.get('name', 'unnamed')}",
+                    rule_name=f"custom_chain_{pattern.get('name', 'unnamed')}",
+                    layer=DefenseLayer.EXECUTION,
+                    risk_level=RiskLevel(risk_str),
+                    description=(
+                        f"Custom attack chain '{pattern.get('name', 'unnamed')}' detected: "
+                        f"{' -> '.join(sequence)}"
+                    ),
+                    decision=Decision(decision_str),
+                    matched_pattern="->".join(sequence),
+                )
+
+        return None
+
+    @staticmethod
+    def _matches_sequence(
+        records: list[ActionRecord], sequence: list[str]
+    ) -> bool:
+        """Check if action records contain the intent sequence in order."""
+        seq_idx = 0
+        for record in records:
+            if seq_idx < len(sequence) and record.intent_category == sequence[seq_idx]:
+                seq_idx += 1
+            if seq_idx == len(sequence):
+                return True
+        return False
