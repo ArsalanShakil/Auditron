@@ -26,17 +26,21 @@ except ImportError:
 
 
 class AuditLogger:
-    """Structured audit logger with OpenTelemetry spans and in-memory ring buffer."""
+    """Structured audit logger with OpenTelemetry spans, in-memory hot cache,
+    and pluggable persistent storage backends."""
 
     def __init__(
         self,
         service_name: str = "agentauditor",
         console_export: bool = False,
         max_buffer_size: int = 1000,
-        log_file: str | Path | None = None,
+        backend: "AuditStorageBackend | None" = None,
     ) -> None:
+        from agentauditor.logging.backends.base import AuditStorageBackend
+        from agentauditor.logging.backends.memory import InMemoryBackend
+
         self._buffer: deque[dict] = deque(maxlen=max_buffer_size)
-        self._log_file: Path | None = Path(log_file) if log_file else None
+        self._backend: AuditStorageBackend = backend or InMemoryBackend(max_size=max_buffer_size)
         self._tracer = None
 
         if _OTEL_AVAILABLE:
@@ -50,6 +54,7 @@ class AuditLogger:
         """Log an audit event to the ring buffer, JSONL file, and OpenTelemetry."""
         entry = self._to_dict(action, verdict)
         self._buffer.append(entry)
+        self._backend.store(entry)
 
         if self._log_file:
             self._append_to_file(entry)
@@ -86,9 +91,16 @@ class AuditLogger:
             pass  # Logging must never break the audit pipeline
 
     def get_recent_logs(self, limit: int = 50) -> list[dict]:
-        """Return recent audit log entries from the ring buffer."""
+        """Return recent audit log entries from the hot cache (ring buffer)."""
         entries = list(self._buffer)
         return entries[-limit:]
+
+    def query(self, **filters) -> list[dict]:
+        """Query the persistent backend with filters.
+
+        Supported filters: agent_id, start_time, end_time, risk_level, decision, limit, offset.
+        """
+        return self._backend.query(**filters)
 
     @property
     def total_audits(self) -> int:

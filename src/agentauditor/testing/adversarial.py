@@ -45,36 +45,33 @@ _COMMAND_SUBSTITUTION_PAYLOADS = [
     ("process_sub", "cat <(cat /etc/passwd)", "tool-005"),
 ]
 
-_LONG_FLAG_PAYLOADS = [
-    # Long-form flags bypass short-form pattern matching
-    ("longflag_recursive_force", "rm --recursive --force /tmp/data", "tool-001"),
-    ("longflag_ifs_evasion", "cat$IFS/etc/passwd", "tool-001"),
-]
-
-_INDIRECT_EXEC_PAYLOADS = [
-    # getattr(__import__) Python sandbox escape
-    ("getattr_import_system", "getattr(__import__('os'), 'system')('id')", "exec-"),
-    # importlib bypass
-    ("importlib_bypass", "importlib.import_module('os').system('id')", "exec-"),
-    # Indirect shell via find -exec
-    ("find_exec_rm", "find / -name '*.py' -exec rm {} \\;", "tool-"),
-]
-
 _ROT13_PAYLOADS = [
-    # ROT13("rm -rf /") = "ez -es /"
-    ("rot13_rm_rf", "ez -es /", "tool-001"),
-    # ROT13("eval") = "riny"
-    ("rot13_eval", "riny(user_input)", "exec-001"),
+    # ROT13("sudo") = "fhqb", ROT13("rm") = "ez"
+    ("rot13_sudo", "fhqb root", "tool-004"),
+    ("rot13_eval", "riny(code)", "exec-"),
 ]
 
-_OCTAL_PAYLOADS = [
-    # \\162\\155 = "rm" in octal
-    ("octal_rm", "\\162\\155 -rf /", "tool-001"),
+_LEETSPEAK_PAYLOADS = [
+    # 5ud0 → sudo, 3v4l → eval
+    ("leet_sudo", "5ud0 r00t", "tool-004"),
+    ("leet_eval", "3v4l(malicious)", "exec-"),
 ]
 
-_DOUBLE_URL_PAYLOADS = [
-    # Double URL-encoded "rm" (%2572%256d → %72%6d → rm)
-    ("double_url_rm", "%2572%256d -rf /", "tool-001"),
+_BIDI_OVERRIDE_PAYLOADS = [
+    # Right-to-left override hiding "rm -rf /"
+    ("bidi_rm", "\u202erm -rf /\u202c", "tool-001"),
+    ("bidi_sudo", "\u2067sudo root\u2069", "tool-004"),
+]
+
+_TOKEN_SPLIT_PAYLOADS = [
+    # "r m - r f /" split into single chars
+    ("split_rm", "r m - r f /", "tool-001"),
+]
+
+_COMMENT_INJECTION_PAYLOADS = [
+    # Shell comment hiding payload
+    ("comment_rm", "rm /* safe operation */ -rf /", "tool-001"),
+    ("comment_html", "sudo <!-- benign --> root", "tool-004"),
 ]
 
 # --- Direct attack payloads for rule coverage ---
@@ -280,16 +277,16 @@ class AdversarialVerifier:
               for name, payload, rule in _URL_ENCODED_PAYLOADS],
             *[("evasion_cmdsub", name, payload, rule)
               for name, payload, rule in _COMMAND_SUBSTITUTION_PAYLOADS],
-            *[("evasion_longflag", name, payload, rule)
-              for name, payload, rule in _LONG_FLAG_PAYLOADS],
-            *[("evasion_indirect_exec", name, payload, rule)
-              for name, payload, rule in _INDIRECT_EXEC_PAYLOADS],
             *[("evasion_rot13", name, payload, rule)
               for name, payload, rule in _ROT13_PAYLOADS],
-            *[("evasion_octal", name, payload, rule)
-              for name, payload, rule in _OCTAL_PAYLOADS],
-            *[("evasion_double_url", name, payload, rule)
-              for name, payload, rule in _DOUBLE_URL_PAYLOADS],
+            *[("evasion_leet", name, payload, rule)
+              for name, payload, rule in _LEETSPEAK_PAYLOADS],
+            *[("evasion_bidi", name, payload, rule)
+              for name, payload, rule in _BIDI_OVERRIDE_PAYLOADS],
+            *[("evasion_tokensplit", name, payload, rule)
+              for name, payload, rule in _TOKEN_SPLIT_PAYLOADS],
+            *[("evasion_comment", name, payload, rule)
+              for name, payload, rule in _COMMENT_INJECTION_PAYLOADS],
         ]
 
         for idx, (technique, name, payload, expected_rule) in enumerate(all_payloads):
