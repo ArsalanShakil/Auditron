@@ -38,7 +38,7 @@ class AuditEngine:
             print("Blocked:", verdict.explanation)
     """
 
-    def __init__(self, policy_path: str | Path | None = None) -> None:
+    def __init__(self, policy_path: str | Path | None = None, audit_backend=None) -> None:
         self.policy = load_policy(policy_path)
         self._rule_engine = RuleEngine(self.policy)
         self._identity_layer = IdentityLayer()
@@ -58,7 +58,7 @@ class AuditEngine:
             llm_judge=None,
         )
         self._enforcer = Enforcer(self.policy)
-        self._logger = AuditLogger()
+        self._logger = AuditLogger(backend=audit_backend)
         self._rate_limiter = AnomalyTracker(
             boundary_probe_threshold=self.policy.boundary_probe_threshold,
             repetition_threshold=self.policy.repetition_threshold,
@@ -160,6 +160,42 @@ class AuditEngine:
             agent_id=agent_id,
         )
         return await self.audit_action(action)
+
+    async def scan_output_stream(
+        self,
+        token_stream: "AsyncIterator[str]",
+        agent_id: str | None = None,
+        on_match: "Callable | None" = None,
+        window_size: int = 50,
+    ) -> Verdict:
+        """Scan streaming output token by token with windowed analysis.
+
+        Buffers tokens, runs incremental rule checks at window boundaries,
+        and supports early-exit on high-confidence threat detection.
+
+        Args:
+            token_stream: Async iterator yielding string tokens.
+            agent_id: Optional agent ID.
+            on_match: Callback when mid-stream matches are found.
+            window_size: Tokens per analysis window (default 50).
+
+        Returns:
+            Final Verdict after stream completes or early-exit.
+        """
+        from agentauditor.core.streaming import scan_stream
+
+        verdict = await scan_stream(
+            token_stream=token_stream,
+            rule_engine=self._rule_engine,
+            agent_id=agent_id,
+            window_size=window_size,
+            on_match=on_match,
+        )
+        self._logger.log_verdict(
+            Action(action_type=ActionType.OUTPUT, agent_id=agent_id),
+            verdict,
+        )
+        return verdict
 
     async def intercept_tool_call(
         self,

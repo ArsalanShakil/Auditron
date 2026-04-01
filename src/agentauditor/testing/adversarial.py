@@ -45,6 +45,35 @@ _COMMAND_SUBSTITUTION_PAYLOADS = [
     ("process_sub", "cat <(cat /etc/passwd)", "tool-005"),
 ]
 
+_ROT13_PAYLOADS = [
+    # ROT13("sudo") = "fhqb", ROT13("rm") = "ez"
+    ("rot13_sudo", "fhqb root", "tool-004"),
+    ("rot13_eval", "riny(code)", "exec-"),
+]
+
+_LEETSPEAK_PAYLOADS = [
+    # 5ud0 → sudo, 3v4l → eval
+    ("leet_sudo", "5ud0 r00t", "tool-004"),
+    ("leet_eval", "3v4l(malicious)", "exec-"),
+]
+
+_BIDI_OVERRIDE_PAYLOADS = [
+    # Right-to-left override hiding "rm -rf /"
+    ("bidi_rm", "\u202erm -rf /\u202c", "tool-001"),
+    ("bidi_sudo", "\u2067sudo root\u2069", "tool-004"),
+]
+
+_TOKEN_SPLIT_PAYLOADS = [
+    # "r m - r f /" split into single chars
+    ("split_rm", "r m - r f /", "tool-001"),
+]
+
+_COMMENT_INJECTION_PAYLOADS = [
+    # Shell comment hiding payload
+    ("comment_rm", "rm /* safe operation */ -rf /", "tool-001"),
+    ("comment_html", "sudo <!-- benign --> root", "tool-004"),
+]
+
 # --- Direct attack payloads for rule coverage ---
 
 _RULE_TRIGGER_PAYLOADS: list[tuple[str, ActionType, str | None, dict, str | None, str, str]] = [
@@ -229,6 +258,16 @@ class AdversarialVerifier:
               for name, payload, rule in _URL_ENCODED_PAYLOADS],
             *[("evasion_cmdsub", name, payload, rule)
               for name, payload, rule in _COMMAND_SUBSTITUTION_PAYLOADS],
+            *[("evasion_rot13", name, payload, rule)
+              for name, payload, rule in _ROT13_PAYLOADS],
+            *[("evasion_leet", name, payload, rule)
+              for name, payload, rule in _LEETSPEAK_PAYLOADS],
+            *[("evasion_bidi", name, payload, rule)
+              for name, payload, rule in _BIDI_OVERRIDE_PAYLOADS],
+            *[("evasion_tokensplit", name, payload, rule)
+              for name, payload, rule in _TOKEN_SPLIT_PAYLOADS],
+            *[("evasion_comment", name, payload, rule)
+              for name, payload, rule in _COMMENT_INJECTION_PAYLOADS],
         ]
 
         for idx, (technique, name, payload, expected_rule) in enumerate(all_payloads):

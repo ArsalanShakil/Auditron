@@ -199,6 +199,114 @@ class TestExtractRawInput:
         assert extract_raw_input({"path": "/tmp/test"}) == ""
 
 
+class TestLeetspeakNormalization:
+    def test_leet_sudo_detected(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("5ud0 r00t")
+        assert "leetspeak_normalized" in result.flags
+        assert "sudo" in result.normalized.lower()
+
+    def test_leet_eval_detected(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("3v4l(malicious_code)")
+        assert "leetspeak_normalized" in result.flags
+
+    def test_normal_numbers_not_flagged(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("I have 300 items and 5 cats")
+        assert "leetspeak_normalized" not in result.flags
+
+    def test_leet_no_false_positive_on_code(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("version 3.4.5 release")
+        assert "leetspeak_normalized" not in result.flags
+
+
+class TestBidiOverride:
+    def test_bidi_rlo_stripped(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("\u202erm -rf /\u202c")
+        assert "bidi_override_stripped" in result.flags
+        assert "rm" in result.normalized
+
+    def test_bidi_isolate_stripped(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("\u2067sudo root\u2069")
+        assert "bidi_override_stripped" in result.flags
+
+    def test_normal_text_no_bidi_flag(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("echo hello world")
+        assert "bidi_override_stripped" not in result.flags
+
+
+class TestCombiningMarks:
+    def test_zalgo_stripped(self, normalizer: TextNormalizer):
+        # "rm" with stacked combining marks (multiple Mn chars that NFKC doesn't compose)
+        # U+0302 (combining circumflex) on top of U+0301 → NFKC composes first, extras remain
+        zalgo = "r\u0302\u0303\u0304m\u0303\u0304 -rf /"
+        result = normalizer.normalize(zalgo)
+        assert "combining_marks_stripped" in result.flags
+
+    def test_stacked_diacritics_stripped(self, normalizer: TextNormalizer):
+        # Multiple combining marks that survive NFKC
+        result = normalizer.normalize("s\u0300\u0301\u0302udo")
+        assert "combining_marks_stripped" in result.flags
+
+    def test_plain_ascii_no_flag(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("echo hello")
+        assert "combining_marks_stripped" not in result.flags
+
+
+class TestTokenSplitting:
+    def test_split_chars_detected(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("r m - r f /")
+        assert "token_splitting_detected" in result.flags
+
+    def test_normal_sentence_not_flagged(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("I am a good person")
+        # "I" and "a" are single-letter words but mixed with multi-letter words
+        assert "token_splitting_detected" not in result.flags
+
+    def test_collapsed_form_appended(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("s u d o root")
+        assert "token_splitting_detected" in result.flags
+        assert "sudo" in result.normalized.lower()
+
+
+class TestROT13Detection:
+    def test_rot13_sudo_detected(self, normalizer: TextNormalizer):
+        # ROT13("sudo") = "fhqb"
+        result = normalizer.normalize("fhqb root")
+        assert "rot13_decoded" in result.flags
+        assert "sudo" in result.normalized.lower()
+
+    def test_rot13_eval_detected(self, normalizer: TextNormalizer):
+        # ROT13("eval") = "riny"
+        result = normalizer.normalize("riny(code)")
+        assert "rot13_decoded" in result.flags
+
+    def test_normal_english_not_flagged(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("hello world this is a test")
+        assert "rot13_decoded" not in result.flags
+
+    def test_short_words_not_checked(self, normalizer: TextNormalizer):
+        # Words < 4 chars should not be ROT13 checked
+        result = normalizer.normalize("abc def ghi")
+        assert "rot13_decoded" not in result.flags
+
+
+class TestCommentInjection:
+    def test_c_style_comment_stripped(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("rm /* safe comment */ -rf /")
+        assert "comment_injection" in result.flags
+        assert "rm" in result.normalized
+        assert "-rf" in result.normalized
+
+    def test_html_comment_stripped(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("sudo <!-- benign --> root")
+        assert "comment_injection" in result.flags
+        assert "sudo" in result.normalized
+        assert "root" in result.normalized
+
+    def test_no_false_positive(self, normalizer: TextNormalizer):
+        result = normalizer.normalize("echo hello world")
+        assert "comment_injection" not in result.flags
+
+
 class TestPerformance:
     def test_normalize_large_text(self, normalizer: TextNormalizer):
         import time

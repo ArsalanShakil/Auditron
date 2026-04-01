@@ -8,12 +8,20 @@ import yaml
 from pydantic import ValidationError
 
 from agentauditor.core.models import PolicyConfig
+from agentauditor.policies.migrations import (
+    CURRENT_POLICY_VERSION,
+    PolicyVersion,
+    get_registry,
+)
 
 _DEFAULTS_DIR = Path(__file__).parent / "defaults"
 
 
 def load_policy(path: str | Path | None = None) -> PolicyConfig:
-    """Load a policy from a YAML file. Falls back to the built-in default policy."""
+    """Load a policy from a YAML file. Falls back to the built-in default policy.
+
+    Automatically migrates old policy versions to the current schema.
+    """
     if path is None:
         path = _DEFAULTS_DIR / "default_policy.yaml"
     else:
@@ -27,6 +35,20 @@ def load_policy(path: str | Path | None = None) -> PolicyConfig:
 
     if raw is None:
         return PolicyConfig()
+
+    # Version check and migration
+    version_str = raw.get("version", "1.0")
+    policy_version = PolicyVersion(version_str)
+
+    if policy_version > CURRENT_POLICY_VERSION:
+        raise ValueError(
+            f"Policy version {policy_version} is newer than supported "
+            f"version {CURRENT_POLICY_VERSION}. Please upgrade AgentAuditor."
+        )
+
+    if policy_version < CURRENT_POLICY_VERSION:
+        registry = get_registry()
+        raw = registry.migrate(raw, policy_version)
 
     return PolicyConfig.model_validate(raw)
 
